@@ -4,43 +4,52 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  apk:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - name: Baixar arquivos do repositório
+      - name: Baixar repositório
         uses: actions/checkout@v4
 
-      - name: Configurar Java
+      - name: Preparar Java e Node
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
 
-      - name: Configurar Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Preparar os arquivos exatos da V2.1.8
+      - name: Extrair exatamente o ZIP V2.1.8
         shell: bash
         run: |
           set -euo pipefail
           ZIP="Right_Price_V2_1_8_CORRECAO_CAMPO_ALIMENTOS.zip"
-          test -f "$ZIP" || { echo "::error::Envie $ZIP para a raiz do repositório."; exit 1; }
-          mkdir -p unpack www
-          unzip -q "$ZIP" -d unpack
-          test -f unpack/vsprice/index.html
-          test -f unpack/vsprice/manifest.webmanifest
-          test -f unpack/vsprice/service-worker.js
-          test -f unpack/vsprice/android-native/SaveFilePickerPlugin.java
-          grep -q 'ALIMENTOS E MATÉRIA-PRIMA CONSUMIDOS NO MÊS' unpack/vsprice/index.html
-          cp -R unpack/vsprice/. www/
+          if [ ! -f "$ZIP" ]; then
+            echo "::error::Não encontrei $ZIP na raiz do repositório. Envie o ZIP V2.1.8 para a raiz do GitHub."
+            exit 1
+          fi
+          rm -rf build-source www android
+          mkdir -p build-source www
+          unzip -q "$ZIP" -d build-source
+          APP="build-source/vsprice"
+          test -s "$APP/index.html"
+          test -s "$APP/manifest.webmanifest"
+          test -s "$APP/service-worker.js"
+          test -s "$APP/android-native/SaveFilePickerPlugin.java"
+          grep -q 'ALIMENTOS E MATÉRIA-PRIMA CONSUMIDOS NO MÊS' "$APP/index.html" || {
+            echo "::error::O ZIP não contém o campo de alimentos V2.1.8."
+            exit 1
+          }
+          cp -a "$APP/." www/
           cat > package.json <<'EOF'
           {
             "name": "right-price",
             "version": "2.1.8",
             "private": true,
-            "scripts": { "build": "echo Static assets copied without modifying app UI" },
+            "scripts": {"build": "node -e \"console.log('Arquivos estáticos preservados')\""},
             "dependencies": {
               "@capacitor/core": "6.2.1",
               "@capacitor/android": "6.2.1"
@@ -50,7 +59,7 @@ jobs:
             }
           }
           EOF
-          npm install
+          npm install --no-audit --no-fund
           cat > capacitor.config.json <<'EOF'
           {
             "appId": "br.com.vilasiria.formacaoprecos",
@@ -62,14 +71,14 @@ jobs:
           npx cap add android
           npx cap sync android
 
-      - name: Registrar plugin nativo de backup
+      - name: Registrar seletor nativo de backup
         shell: bash
         run: |
           set -euo pipefail
-          DEST="android/app/src/main/java/br/com/vilasiria/formacaoprecos"
-          mkdir -p "$DEST"
-          cp unpack/vsprice/android-native/SaveFilePickerPlugin.java "$DEST/SaveFilePickerPlugin.java"
-          cat > "$DEST/MainActivity.java" <<'EOF'
+          JAVA_DIR="android/app/src/main/java/br/com/vilasiria/formacaoprecos"
+          mkdir -p "$JAVA_DIR"
+          cp build-source/vsprice/android-native/SaveFilePickerPlugin.java "$JAVA_DIR/SaveFilePickerPlugin.java"
+          cat > "$JAVA_DIR/MainActivity.java" <<'EOF'
           package br.com.vilasiria.formacaoprecos;
 
           import android.os.Bundle;
@@ -83,65 +92,28 @@ jobs:
             }
           }
           EOF
+          npx cap sync android
 
-      - name: Configurar assinatura existente
+      - name: Conferir arquivos web copiados sem alteração
         shell: bash
-        env:
-          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          KEYSTORE="unpack/vsprice/signing/vila-siria-update.jks"
-          test -f "$KEYSTORE"
-          test -n "$STORE_PASSWORD" || { echo "::error::Configure o segredo ANDROID_KEYSTORE_PASSWORD."; exit 1; }
-          test -n "$KEY_PASSWORD" || { echo "::error::Configure o segredo ANDROID_KEY_PASSWORD."; exit 1; }
-          cp "$KEYSTORE" android/app/vila-siria-update.jks
-          cat >> android/gradle.properties <<EOF
-          RIGHTPRICE_STORE_FILE=vila-siria-update.jks
-          RIGHTPRICE_STORE_PASSWORD=${STORE_PASSWORD}
-          RIGHTPRICE_KEY_ALIAS=vila-siria
-          RIGHTPRICE_KEY_PASSWORD=${KEY_PASSWORD}
-          EOF
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("android/app/build.gradle")
-          s = p.read_text()
-          marker = "    buildTypes {"
-          if marker not in s:
-              raise SystemExit("Bloco buildTypes não encontrado; compilação interrompida sem alterar o app.")
-          signing = """    signingConfigs {
-                  release {
-                      storeFile file(project.findProperty('RIGHTPRICE_STORE_FILE') ?: 'vila-siria-update.jks')
-                      storePassword project.findProperty('RIGHTPRICE_STORE_PASSWORD')
-                      keyAlias project.findProperty('RIGHTPRICE_KEY_ALIAS') ?: 'vila-siria'
-                      keyPassword project.findProperty('RIGHTPRICE_KEY_PASSWORD')
-                  }
-              }
-
-          """
-          if "RIGHTPRICE_STORE_FILE" not in s:
-              s = s.replace(marker, signing + marker, 1)
-          if "signingConfig signingConfigs.release" not in s:
-              needle = "        release {"
-              if needle not in s:
-                  raise SystemExit("Bloco release não encontrado no Gradle.")
-              s = s.replace(needle, needle + "\n            signingConfig signingConfigs.release", 1)
-          p.write_text(s)
-          PY
-
-      - name: Verificar presença do campo antes de compilar
-        run: |
+          cmp build-source/vsprice/index.html www/index.html
+          cmp build-source/vsprice/manifest.webmanifest www/manifest.webmanifest
           grep -q 'ALIMENTOS E MATÉRIA-PRIMA CONSUMIDOS NO MÊS' android/app/src/main/assets/public/index.html
 
-      - name: Compilar APK
+      - name: Compilar APK de teste (debug)
+        shell: bash
         run: |
+          set -euo pipefail
           cd android
           chmod +x gradlew
-          ./gradlew assembleRelease
+          ./gradlew --no-daemon assembleDebug
+          test -s app/build/outputs/apk/debug/app-debug.apk
 
       - name: Disponibilizar APK
         uses: actions/upload-artifact@v4
         with:
-          name: Right-Price-V2.1.8-APK
-          path: android/app/build/outputs/apk/release/app-release.apk
+          name: Right-Price-V2.1.8-APK-DEBUG
+          path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
