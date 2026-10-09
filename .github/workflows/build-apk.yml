@@ -1,303 +1,140 @@
-
-name: Right Price - APK com Backup Escolher Local
+name: Gerar APK Right Price V2.1.7
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-
-permissions:
-  contents: read
 
 jobs:
-  build:
-    name: Compilar Right Price
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-
+  build-apk:
+    runs-on: ubuntu-latest
     steps:
-      - name: Baixar projeto
+      - name: Baixar repositório
         uses: actions/checkout@v4
 
-      - name: Configurar Java 17
+      - name: Configurar Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
       - name: Configurar Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Preparar Android SDK
+      - name: Preparar arquivos do Right Price V2.1.7
         shell: bash
         run: |
-          set -e
-          test -d "$ANDROID_HOME" || {
-            echo "::error::Android SDK não encontrado."
-            exit 1
-          }
-
-          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -n 1)"
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "::error::sdkmanager não encontrado."
-            exit 1
-          fi
-
-          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-
-          "$SDKMANAGER" \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0"
-
-      - name: Extrair e validar ZIP
-        shell: bash
-        run: |
-          set -e
-
-          ZIP="Right_Price_V2_1_5_BACKUP_ESCOLHER_LOCAL.zip"
-
-          if [ ! -f "$ZIP" ]; then
-            echo "::error::Coloque o ZIP exato na raiz do repositório."
-            exit 1
-          fi
-
-          mkdir -p extracted www
-          unzip -oq "$ZIP" -d extracted
-
-          test -f extracted/vsprice/index.html
-          test -f extracted/vsprice/icons/icon-512.png
-          test -f extracted/vsprice/android-native/SaveFilePickerPlugin.java
-
-          cp -a extracted/vsprice/. www/
-
-          test -f www/index.html
-          test -f www/manifest.webmanifest
-          test -f www/service-worker.js
-          test -f www/icons/icon-512.png
-
-          echo "ZIP validado e arquivos originais copiados."
-
-      - name: Instalar Capacitor e plugins
-        shell: bash
-        run: |
-          set -e
-
+          set -euo pipefail
+          ZIP="Right_Price_V2_1_7_MOTOR_PRECOS_CORRIGIDO.zip"
+          test -f "$ZIP" || { echo "::error::Coloque $ZIP na raiz do repositório."; exit 1; }
+          mkdir -p work
+          unzip -q "$ZIP" -d work
+          test -f work/vsprice/index.html
+          mkdir -p www
+          cp -R work/vsprice/. www/
           cat > package.json <<'EOF'
           {
             "name": "right-price",
-            "version": "2.1.5",
-            "private": true
+            "version": "2.1.7",
+            "private": true,
+            "description": "Right Price - formação de preços",
+            "scripts": { "build": "echo Static web assets ready" },
+            "dependencies": {
+              "@capacitor/core": "6.2.1",
+              "@capacitor/android": "6.2.1"
+            },
+            "devDependencies": {
+              "@capacitor/cli": "6.2.1"
+            }
           }
           EOF
-
-          npm install --no-audit --no-fund \
-            @capacitor/core@6.2.1 \
-            @capacitor/android@6.2.1 \
-            @capacitor/cli@6.2.1
-
+          npm install
           cat > capacitor.config.json <<'EOF'
           {
             "appId": "br.com.vilasiria.formacaoprecos",
             "appName": "Right Price",
             "webDir": "www",
-            "bundledWebRuntime": false
+            "bundledWebRuntime": false,
+            "android": { "allowMixedContent": false }
           }
           EOF
-
           npx cap add android
           npx cap sync android
 
-      - name: Integrar seletor nativo de backup
+      - name: Integrar plugin de backup com seletor de armazenamento Android
         shell: bash
         run: |
-          set -e
-
-          JAVA_DIR="android/app/src/main/java/br/com/vilasiria/formacaoprecos"
-          mkdir -p "$JAVA_DIR"
-
-          cp \
-            www/android-native/SaveFilePickerPlugin.java \
-            "$JAVA_DIR/SaveFilePickerPlugin.java"
-
-          cat > "$JAVA_DIR/MainActivity.java" <<'EOF'
+          set -euo pipefail
+          SRC="work/vsprice/android-native/SaveFilePickerPlugin.java"
+          DEST="android/app/src/main/java/br/com/vilasiria/formacaoprecos/SaveFilePickerPlugin.java"
+          test -f "$SRC"
+          mkdir -p "$(dirname "$DEST")"
+          cp "$SRC" "$DEST"
+          MAIN="android/app/src/main/java/br/com/vilasiria/formacaoprecos/MainActivity.java"
+          cat > "$MAIN" <<'EOF'
           package br.com.vilasiria.formacaoprecos;
 
           import android.os.Bundle;
           import com.getcapacitor.BridgeActivity;
 
           public class MainActivity extends BridgeActivity {
-              @Override
-              public void onCreate(Bundle savedInstanceState) {
-                  registerPlugin(SaveFilePickerPlugin.class);
-                  super.onCreate(savedInstanceState);
-              }
+            @Override
+            public void onCreate(Bundle savedInstanceState) {
+              registerPlugin(SaveFilePickerPlugin.class);
+              super.onCreate(savedInstanceState);
+            }
           }
           EOF
 
-          echo "Plugin de seleção de arquivo integrado."
-
-      - name: Aplicar ícone original
+      - name: Configurar assinatura do APK
         shell: bash
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          set -e
-
-          python3 -m pip install --quiet --disable-pip-version-check pillow
-
-          python3 - <<'PY'
-          from pathlib import Path
-          from PIL import Image
-
-          source = Path("www/icons/icon-512.png")
-          image = Image.open(source).convert("RGBA")
-          res = Path("android/app/src/main/res")
-
-          sizes = {
-              "mipmap-mdpi": 48,
-              "mipmap-hdpi": 72,
-              "mipmap-xhdpi": 96,
-              "mipmap-xxhdpi": 144,
-              "mipmap-xxxhdpi": 192
-          }
-
-          for folder, size in sizes.items():
-              directory = res / folder
-              directory.mkdir(parents=True, exist_ok=True)
-              icon = image.resize((size, size), Image.Resampling.LANCZOS)
-              icon.save(directory / "ic_launcher.png")
-              icon.save(directory / "ic_launcher_round.png")
-
-          # Usar os PNGs originais redimensionados, sem ícone adaptativo padrão.
-          for folder in ("mipmap-anydpi-v26", "mipmap-anydpi"):
-              directory = res / folder
-              if directory.exists():
-                  for name in ("ic_launcher.xml", "ic_launcher_round.xml"):
-                      file = directory / name
-                      if file.exists():
-                          file.unlink()
-
-          print("Ícone original aplicado.")
-          PY
-
-          mkdir -p android/app/src/main/res/values
-
-          cat > android/app/src/main/res/values/strings.xml <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <resources>
-              <string name="app_name">Right Price</string>
-              <string name="title_activity_main">Right Price</string>
-          </resources>
+          set -euo pipefail
+          KEYSTORE="work/vsprice/signing/vila-siria-update.jks"
+          test -f "$KEYSTORE" || { echo "::error::Keystore original não encontrado no ZIP."; exit 1; }
+          mkdir -p android/app
+          cp "$KEYSTORE" android/app/vila-siria-update.jks
+          cat >> android/gradle.properties <<EOF
+          RIGHTPRICE_STORE_FILE=vila-siria-update.jks
+          RIGHTPRICE_STORE_PASSWORD=${KEYSTORE_PASSWORD}
+          RIGHTPRICE_KEY_ALIAS=vila-siria
+          RIGHTPRICE_KEY_PASSWORD=${KEY_PASSWORD}
           EOF
-
           python3 - <<'PY'
           from pathlib import Path
-          import re
-
-          p = Path("android/app/src/main/AndroidManifest.xml")
-          s = p.read_text()
-
-          s = re.sub(
-              r'android:icon="[^"]*"',
-              'android:icon="@mipmap/ic_launcher"',
-              s
-          )
-
-          if 'android:icon=' not in s:
-              s = s.replace(
-                  '<application',
-                  '<application android:icon="@mipmap/ic_launcher"',
-                  1
-              )
-
-          s = re.sub(r'\s+android:roundIcon="[^"]*"', '', s)
-
-          s = s.replace(
-              '<application',
-              '<application android:roundIcon="@mipmap/ic_launcher_round"',
-              1
-          )
-
-          p.write_text(s)
-          PY
-
-      - name: Configurar versão do aplicativo
-        shell: bash
-        run: |
-          set -e
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
           p = Path("android/app/build.gradle")
           s = p.read_text()
+          marker = "    buildTypes {"
+          if marker not in s:
+              raise SystemExit("Não foi possível localizar o bloco buildTypes do Gradle.")
+          signing = """    signingConfigs {
+                  release {
+                      storeFile file(project.findProperty('RIGHTPRICE_STORE_FILE') ?: 'vila-siria-update.jks')
+                      storePassword project.findProperty('RIGHTPRICE_STORE_PASSWORD')
+                      keyAlias project.findProperty('RIGHTPRICE_KEY_ALIAS') ?: 'vila-siria'
+                      keyPassword project.findProperty('RIGHTPRICE_KEY_PASSWORD')
+                  }
+              }
 
-          s = re.sub(
-              r'applicationId\s+["\'][^"\']+["\']',
-              'applicationId "br.com.vilasiria.formacaoprecos"',
-              s,
-              count=1
-          )
-
-          s = re.sub(r'versionCode\s+\d+', 'versionCode 2001', s, count=1)
-          s = re.sub(r'versionName\s+["\'][^"\']+["\']', 'versionName "2.1.5"', s, count=1)
-
+          """
+          if "RIGHTPRICE_STORE_FILE" not in s:
+              s = s.replace(marker, signing + marker, 1)
+          s = s.replace("buildTypes {\n        release {", "buildTypes {\n        release {\n            signingConfig signingConfigs.release", 1)
           p.write_text(s)
           PY
 
-      - name: Verificar integração
-        shell: bash
+      - name: Gerar APK de release
         run: |
-          set -e
-
-          test -f www/index.html
-          test -f www/icons/icon-512.png
-          test -f android/app/src/main/java/br/com/vilasiria/formacaoprecos/SaveFilePickerPlugin.java
-          test -f android/app/src/main/java/br/com/vilasiria/formacaoprecos/MainActivity.java
-
-          grep -q 'registerPlugin(SaveFilePickerPlugin.class)' \
-            android/app/src/main/java/br/com/vilasiria/formacaoprecos/MainActivity.java
-
-          echo "Arquivos e registro do plugin conferidos."
-
-      - name: Compilar APK
-        shell: bash
-        run: |
-          set -e
           cd android
           chmod +x gradlew
-          ./gradlew --no-daemon assembleDebug
+          ./gradlew assembleRelease
 
-          APK="app/build/outputs/apk/debug/app-debug.apk"
-
-          if [ ! -f "$APK" ]; then
-            echo "::error::APK não foi gerado."
-            exit 1
-          fi
-
-          mkdir -p "$GITHUB_WORKSPACE/output"
-          cp "$APK" "$GITHUB_WORKSPACE/output/Right-Price.apk"
-
-      - name: Verificar APK
-        shell: bash
-        run: |
-          set -e
-          test -s output/Right-Price.apk
-          unzip -t output/Right-Price.apk >/dev/null
-
-          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging \
-            output/Right-Price.apk \
-            | grep "package: name='br.com.vilasiria.formacaoprecos'"
-
-          echo "APK válido."
-
-      - name: Publicar APK
+      - name: Publicar APK gerado
         uses: actions/upload-artifact@v4
         with:
-          name: Right-Price-APK-Backup-Escolher-Local
-          path: output/Right-Price.apk
+          name: Right-Price-V2.1.7-APK
+          path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
-          retention-days: 30
