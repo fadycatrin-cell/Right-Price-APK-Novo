@@ -1,15 +1,15 @@
-name: Gerar APK Right Price V2.1.9
+name: Gerar APK do ZIP Right Price V2.1.9
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  gerar-apk:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - name: Baixar repositório
+      - name: Baixar arquivos do repositório
         uses: actions/checkout@v4
 
       - name: Configurar Java
@@ -18,21 +18,26 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Configurar Node
+      - name: Configurar Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Extrair ZIP exato da V2.1.9
+      - name: Extrair e empacotar exatamente o ZIP V2.1.9
         shell: bash
         run: |
           set -euo pipefail
           ZIP="Right_Price_V2_1_9_TEXTO_CAMPO_CORRIGIDO.zip"
-          test -f "$ZIP" || { echo "::error::Coloque $ZIP na raiz do repositório."; exit 1; }
-          rm -rf source www android
-          mkdir -p source www
-          unzip -q "$ZIP" -d source
-          APP="source/vsprice"
+          if [ ! -f "$ZIP" ]; then
+            echo "::error::Arquivo ausente: $ZIP. Coloque o ZIP V2.1.9 na raiz do repositório."
+            exit 1
+          fi
+
+          rm -rf rp-source www android
+          mkdir -p rp-source www
+          unzip -q "$ZIP" -d rp-source
+          APP="rp-source/vsprice"
+
           test -s "$APP/index.html"
           test -s "$APP/manifest.webmanifest"
           test -s "$APP/service-worker.js"
@@ -42,15 +47,19 @@ jobs:
           test -s "$APP/icons/icon-96.png"
           test -s "$APP/icons/icon-144.png"
           test -s "$APP/icons/icon-192.png"
+
           grep -q 'ALIMENTOS E MATÉRIA-PRIMA CONSUMIDOS NO MÊS' "$APP/index.html"
           if grep -q '<b>Campo novo:</b>' "$APP/index.html"; then
-            echo "::error::O ZIP não corresponde à V2.1.9: ainda contém o texto removido."
+            echo "::error::O ZIP colocado não é a V2.1.9 corrigida."
             exit 1
           fi
+
+          # Copia os arquivos da interface sem reescrever HTML/CSS/JS.
           cp -a "$APP/." www/
+
           cat > package.json <<'EOF'
           {
-            "name": "right-price",
+            "name": "right-price-v219",
             "version": "2.1.9",
             "private": true,
             "dependencies": {
@@ -62,6 +71,7 @@ jobs:
             }
           }
           EOF
+
           npm install --no-audit --no-fund
           cat > capacitor.config.json <<'EOF'
           {
@@ -71,14 +81,37 @@ jobs:
             "bundledWebRuntime": false
           }
           EOF
+
           npx cap add android
           npx cap sync android
 
-      - name: Aplicar os ícones que vieram dentro do ZIP
+      - name: Incluir o seletor nativo de backup do ZIP
         shell: bash
         run: |
           set -euo pipefail
-          SRC="source/vsprice/icons"
+          JAVA_DIR="android/app/src/main/java/br/com/vilasiria/formacaoprecos"
+          mkdir -p "$JAVA_DIR"
+          cp rp-source/vsprice/android-native/SaveFilePickerPlugin.java "$JAVA_DIR/SaveFilePickerPlugin.java"
+          cat > "$JAVA_DIR/MainActivity.java" <<'EOF'
+          package br.com.vilasiria.formacaoprecos;
+
+          import android.os.Bundle;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+            @Override
+            public void onCreate(Bundle savedInstanceState) {
+              registerPlugin(SaveFilePickerPlugin.class);
+              super.onCreate(savedInstanceState);
+            }
+          }
+          EOF
+
+      - name: Usar os ícones incluídos no ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="rp-source/vsprice/icons"
           RES="android/app/src/main/res"
           mkdir -p "$RES/mipmap-mdpi" "$RES/mipmap-hdpi" "$RES/mipmap-xhdpi" "$RES/mipmap-xxhdpi" "$RES/mipmap-xxxhdpi"
           cp "$SRC/icon-48.png" "$RES/mipmap-mdpi/ic_launcher.png"
@@ -91,38 +124,19 @@ jobs:
           cp "$SRC/icon-144.png" "$RES/mipmap-xxhdpi/ic_launcher_round.png"
           cp "$SRC/icon-192.png" "$RES/mipmap-xxxhdpi/ic_launcher.png"
           cp "$SRC/icon-192.png" "$RES/mipmap-xxxhdpi/ic_launcher_round.png"
+          # Remover XML adaptativos gerados pelo template para evitar o ícone Android padrão.
           rm -f "$RES/mipmap-anydpi-v26/ic_launcher.xml" "$RES/mipmap-anydpi-v26/ic_launcher_round.xml"
 
-      - name: Registrar plugin de backup que veio no ZIP
+      - name: Verificar que interface e ícones vieram do ZIP
         shell: bash
         run: |
           set -euo pipefail
-          DEST="android/app/src/main/java/br/com/vilasiria/formacaoprecos"
-          mkdir -p "$DEST"
-          cp source/vsprice/android-native/SaveFilePickerPlugin.java "$DEST/SaveFilePickerPlugin.java"
-          cat > "$DEST/MainActivity.java" <<'EOF'
-          package br.com.vilasiria.formacaoprecos;
-          import android.os.Bundle;
-          import com.getcapacitor.BridgeActivity;
-          public class MainActivity extends BridgeActivity {
-            @Override public void onCreate(Bundle savedInstanceState) {
-              registerPlugin(SaveFilePickerPlugin.class);
-              super.onCreate(savedInstanceState);
-            }
-          }
-          EOF
-          npx cap sync android
-
-      - name: Verificar que os arquivos web e ícones são os do ZIP
-        shell: bash
-        run: |
-          set -euo pipefail
-          cmp source/vsprice/index.html www/index.html
+          cmp rp-source/vsprice/index.html www/index.html
           grep -q 'ALIMENTOS E MATÉRIA-PRIMA CONSUMIDOS NO MÊS' android/app/src/main/assets/public/index.html
-          cmp source/vsprice/icons/icon-48.png android/app/src/main/res/mipmap-mdpi/ic_launcher.png
-          cmp source/vsprice/icons/icon-192.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          cmp rp-source/vsprice/icons/icon-48.png android/app/src/main/res/mipmap-mdpi/ic_launcher.png
+          cmp rp-source/vsprice/icons/icon-192.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
 
-      - name: Gerar APK debug
+      - name: Compilar APK
         shell: bash
         run: |
           set -euo pipefail
@@ -131,7 +145,7 @@ jobs:
           ./gradlew --no-daemon assembleDebug
           test -s app/build/outputs/apk/debug/app-debug.apk
 
-      - name: Entregar APK
+      - name: Disponibilizar APK
         uses: actions/upload-artifact@v4
         with:
           name: Right-Price-V2.1.9-APK
