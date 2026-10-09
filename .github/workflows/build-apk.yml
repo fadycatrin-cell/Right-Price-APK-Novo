@@ -1,7 +1,9 @@
-name: Gerar APK Right Price V2.3.1 — margem global e custos fixos
+name: Right Price V2.3.1 — APK Debug sem senha
 
 on:
   workflow_dispatch:
+
+# Este workflow gera APK Debug e NÃO usa keystore, senha ou Secrets do GitHub.
 
 jobs:
   build:
@@ -37,7 +39,6 @@ jobs:
           test -s "$APP/manifest.webmanifest"
           test -s "$APP/service-worker.js"
           test -s "$APP/android-native/SaveFilePickerPlugin.java"
-          test -s "$APP/signing/vila-siria-update.jks"
           grep -q 'function fixedExpensePct' "$APP/index.html"
           grep -q 'function variableExpensePct' "$APP/index.html"
           if grep -q 'Custos fixos não entram no divisor por produto' "$APP/index.html"; then
@@ -128,41 +129,21 @@ jobs:
           cp rp-source/vsprice/icons/icon-192.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
           cp rp-source/vsprice/icons/icon-192.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
 
-      - name: Compilar versão Release
+      - name: Gerar APK instalável sem keystore nem segredos
         shell: bash
         run: |
           set -euo pipefail
           cd android
           chmod +x gradlew
-          ./gradlew --no-daemon assembleRelease
-          test -s app/build/outputs/apk/release/app-release-unsigned.apk
-
-      - name: Assinar APK com a chave incluída no projeto
-        shell: bash
-        env:
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          ANDROID_KEY_ALIAS_SECRET: ${{ secrets.ANDROID_KEY_ALIAS }}
-        run: |
-          set -euo pipefail
-          test -n "${ANDROID_KEYSTORE_PASSWORD:-}" || { echo "::error::Configure o segredo ANDROID_KEYSTORE_PASSWORD no GitHub."; exit 1; }
-          test -n "${ANDROID_KEY_PASSWORD:-}" || { echo "::error::Configure o segredo ANDROID_KEY_PASSWORD no GitHub."; exit 1; }
-          ALIAS="${ANDROID_KEY_ALIAS_SECRET:-vila-siria}"
-          BT="$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
-          UNSIGNED="android/app/build/outputs/apk/release/app-release-unsigned.apk"
-          "$ANDROID_HOME/build-tools/$BT/zipalign" -f -v 4 "$UNSIGNED" Right-Price-V2.3.1-aligned.apk
-          "$ANDROID_HOME/build-tools/$BT/apksigner" sign \
-            --ks rp-source/vsprice/signing/vila-siria-update.jks \
-            --ks-key-alias "$ALIAS" \
-            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
-            --key-pass env:ANDROID_KEY_PASSWORD \
-            --out Right-Price-V2.3.1.apk Right-Price-V2.3.1-aligned.apk
-          "$ANDROID_HOME/build-tools/$BT/apksigner" verify --verbose Right-Price-V2.3.1.apk
+          ./gradlew --no-daemon assembleDebug
+          test -s app/build/outputs/apk/debug/app-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk ../Right-Price-V2.3.1.apk
+          cd ..
           test -s Right-Price-V2.3.1.apk
 
       - name: Disponibilizar APK gerado
         uses: actions/upload-artifact@v4
         with:
-          name: Right-Price-V2.3.1-APK
+          name: Right-Price-V2.3.1-APK-Instalavel
           path: Right-Price-V2.3.1.apk
           if-no-files-found: error
