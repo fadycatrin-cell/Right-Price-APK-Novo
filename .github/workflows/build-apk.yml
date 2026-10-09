@@ -1,82 +1,83 @@
 
-name: Gerar APK Right Price
+name: Right Price - Gerar APK Final
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: build
+    name: Gerar APK
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
       - name: Baixar projeto
         uses: actions/checkout@v4
 
-      - name: Configurar Java
+      - name: Configurar Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Configurar Node.js
+      - name: Configurar Node 20
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Preparar Android SDK
+      - name: Verificar Android SDK
         shell: bash
         run: |
           set -e
-          test -d "$ANDROID_HOME" || {
-            echo "::error::Android SDK não encontrado."
-            exit 1
-          }
+          test -d "$ANDROID_HOME" || exit 1
 
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -n 1)"
+
           if [ -z "$SDKMANAGER" ]; then
-            echo "::error::sdkmanager não encontrado."
+            echo "::error::Android SDK indisponível."
             exit 1
           fi
 
           yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Extrair ZIP original
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Extrair arquivo original
         shell: bash
         run: |
           set -e
-          ZIP_FILE="$(find . -maxdepth 2 -type f -name 'Right_Price_V2_1_5_AJUSTES_BACKUP_IDIOMAS_ABA.zip' -print -quit)"
 
-          if [ -z "$ZIP_FILE" ]; then
-            echo "::error::Envie o ZIP original para a raiz do repositório."
+          ZIP="Right_Price_V2_1_5_FINAL_ICONE_BACKUP_CORRIGIDO.zip"
+
+          if [ ! -f "$ZIP" ]; then
+            echo "::error::ZIP original não encontrado na raiz do repositório."
             exit 1
           fi
 
           mkdir -p extracted
-          unzip -oq "$ZIP_FILE" -d extracted
+          unzip -oq "$ZIP" -d extracted
 
-          SOURCE_DIR="$(find extracted -type f -path '*/vsprice/index.html' -print -quit | xargs -r dirname)"
-
-          if [ -z "$SOURCE_DIR" ] || [ ! -f "$SOURCE_DIR/icons/icon-512.png" ]; then
-            echo "::error::Não encontrei o index.html ou o ícone original icon-512.png."
-            exit 1
-          fi
+          test -f extracted/vsprice/index.html
+          test -f extracted/vsprice/manifest.webmanifest
+          test -f extracted/vsprice/service-worker.js
+          test -f extracted/vsprice/icons/icon-512.png
 
           mkdir -p www
-          cp -R "$SOURCE_DIR"/. www/
 
-          test -f www/index.html
-          test -f www/manifest.webmanifest
-          test -f www/icons/icon-512.png
+          cp -a extracted/vsprice/. www/
 
-      - name: Preparar Capacitor
+          echo "Arquivos originais preservados."
+
+      - name: Instalar Capacitor e plugins do backup
         shell: bash
         run: |
           set -e
@@ -89,25 +90,33 @@ jobs:
           }
           EOF
 
-          npm install --no-audit --no-fund
-          npm install @capacitor/core@6.2.1 @capacitor/android@6.2.1 @capacitor/cli@6.2.1 --no-audit --no-fund
+          npm install --no-audit --no-fund \
+            @capacitor/core@6.2.1 \
+            @capacitor/android@6.2.1 \
+            @capacitor/cli@6.2.1 \
+            @capacitor/filesystem@6.0.3 \
+            @capacitor/share@6.0.3
 
           cat > capacitor.config.json <<'EOF'
           {
             "appId": "br.com.vilasiria.formacaoprecos",
             "appName": "Right Price",
             "webDir": "www",
-            "bundledWebRuntime": false
+            "bundledWebRuntime": false,
+            "android": {
+              "allowMixedContent": false
+            }
           }
           EOF
 
           npx cap add android
           npx cap sync android
 
-      - name: Aplicar ícone original do Right Price
+      - name: Preservar ícone verde original
         shell: bash
         run: |
           set -e
+
           python -m pip install --quiet Pillow
 
           python - <<'PY'
@@ -115,10 +124,9 @@ jobs:
           from pathlib import Path
 
           source = Path("www/icons/icon-512.png")
-          if not source.is_file():
-              raise SystemExit("Ícone original não encontrado.")
-
           image = Image.open(source).convert("RGBA")
+
+          res = Path("android/app/src/main/res")
 
           sizes = {
               "mipmap-mdpi": 48,
@@ -128,57 +136,95 @@ jobs:
               "mipmap-xxxhdpi": 192,
           }
 
-          res = Path("android/app/src/main/res")
-
           for folder, size in sizes.items():
-              target_dir = res / folder
-              target_dir.mkdir(parents=True, exist_ok=True)
-              icon = image.resize((size, size), Image.Resampling.LANCZOS)
-              icon.save(target_dir / "ic_launcher.png")
-              icon.save(target_dir / "ic_launcher_round.png")
+              directory = res / folder
+              directory.mkdir(parents=True, exist_ok=True)
 
-          # Remove os ícones adaptativos padrão do Capacitor,
-          # para que o Android use os PNGs derivados do ícone original.
+              resized = image.resize(
+                  (size, size),
+                  Image.Resampling.LANCZOS
+              )
+
+              resized.save(directory / "ic_launcher.png")
+              resized.save(directory / "ic_launcher_round.png")
+
+          # Impedir uso do ícone padrão adaptativo.
           for folder in ("mipmap-anydpi-v26", "mipmap-anydpi"):
-              target_dir = res / folder
-              if target_dir.exists():
-                  for name in ("ic_launcher.xml", "ic_launcher_round.xml"):
-                      file = target_dir / name
-                      if file.exists():
-                          file.unlink()
+              directory = res / folder
+              if directory.exists():
+                  for name in (
+                      "ic_launcher.xml",
+                      "ic_launcher_round.xml"
+                  ):
+                      target = directory / name
+                      if target.exists():
+                          target.unlink()
 
-          print("Ícone original aplicado aos recursos Android.")
+          print("Ícone verde original aplicado.")
           PY
 
-      - name: Compilar APK
+      - name: Confirmar identidade do aplicativo
         shell: bash
         run: |
           set -e
+
+          test -f www/index.html
+          test -f www/icons/icon-512.png
+          test -f www/manifest.webmanifest
+          test -f www/service-worker.js
+
+          grep -q \
+            "br.com.vilasiria.formacaoprecos" \
+            capacitor.config.json
+
+          echo "Nome: Right Price"
+          echo "Pacote: br.com.vilasiria.formacaoprecos"
+          echo "Arquivos web preservados."
+
+      - name: Compilar APK Android
+        shell: bash
+        run: |
+          set -e
+
           cd android
           chmod +x gradlew
+
           ./gradlew --no-daemon assembleDebug
 
           APK="app/build/outputs/apk/debug/app-debug.apk"
+
           if [ ! -f "$APK" ]; then
-            echo "::error::APK não foi gerado."
+            echo "::error::APK não encontrado."
             exit 1
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/output"
-          cp "$APK" "$GITHUB_WORKSPACE/output/Right-Price.apk"
 
-      - name: Verificar APK e ícone
+          cp "$APK" \
+            "$GITHUB_WORKSPACE/output/Right-Price.apk"
+
+      - name: Verificar APK final
         shell: bash
         run: |
           set -e
-          test -s output/Right-Price.apk
-          test -s android/app/src/main/res/mipmap-mdpi/ic_launcher.png
-          echo "APK gerado e recursos do ícone original encontrados."
 
-      - name: Publicar APK
+          APK="output/Right-Price.apk"
+
+          test -s "$APK"
+
+          unzip -t "$APK" >/dev/null
+
+          AAPT="$ANDROID_HOME/build-tools/35.0.0/aapt"
+
+          "$AAPT" dump badging "$APK" \
+            | grep "package: name='br.com.vilasiria.formacaoprecos'"
+
+          echo "APK compilado com sucesso."
+
+      - name: Publicar APK para download
         uses: actions/upload-artifact@v4
         with:
-          name: Right-Price-APK
+          name: Right-Price-APK-Final
           path: output/Right-Price.apk
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
