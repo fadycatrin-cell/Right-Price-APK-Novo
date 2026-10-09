@@ -1,15 +1,15 @@
-name: Gerar APK do ZIP Right Price V2.1.9
+name: Gerar APK Right Price V2.3.1 — margem global e custos fixos
 
 on:
   workflow_dispatch:
 
 jobs:
-  gerar-apk:
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - name: Baixar arquivos do repositório
+      - name: Baixar repositório
         uses: actions/checkout@v4
 
       - name: Configurar Java
@@ -18,49 +18,36 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Configurar Node.js
+      - name: Configurar Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Extrair e empacotar exatamente o ZIP V2.1.9
+      - name: Extrair projeto corrigido
         shell: bash
         run: |
           set -euo pipefail
-          ZIP="Right_Price_V2_1_9_TEXTO_CAMPO_CORRIGIDO.zip"
-          if [ ! -f "$ZIP" ]; then
-            echo "::error::Arquivo ausente: $ZIP. Coloque o ZIP V2.1.9 na raiz do repositório."
-            exit 1
-          fi
-
+          ZIP="Right_Price_V2_3_1_MOTOR_PRECOS_AUDITADO.zip"
+          test -f "$ZIP" || { echo "::error::Coloque $ZIP na raiz do repositório."; exit 1; }
           rm -rf rp-source www android
           mkdir -p rp-source www
           unzip -q "$ZIP" -d rp-source
           APP="rp-source/vsprice"
-
           test -s "$APP/index.html"
           test -s "$APP/manifest.webmanifest"
           test -s "$APP/service-worker.js"
           test -s "$APP/android-native/SaveFilePickerPlugin.java"
-          test -s "$APP/icons/icon-48.png"
-          test -s "$APP/icons/icon-72.png"
-          test -s "$APP/icons/icon-96.png"
-          test -s "$APP/icons/icon-144.png"
-          test -s "$APP/icons/icon-192.png"
-
-          grep -q 'ALIMENTOS E MATÉRIA-PRIMA CONSUMIDOS NO MÊS' "$APP/index.html"
-          if grep -q '<b>Campo novo:</b>' "$APP/index.html"; then
-            echo "::error::O ZIP colocado não é a V2.1.9 corrigida."
-            exit 1
+          test -s "$APP/signing/vila-siria-update.jks"
+          grep -q 'function fixedExpensePct' "$APP/index.html"
+          grep -q 'function variableExpensePct' "$APP/index.html"
+          if grep -q 'Custos fixos não entram no divisor por produto' "$APP/index.html"; then
+            echo "::error::Texto antigo do motor de preços encontrado."; exit 1
           fi
-
-          # Copia os arquivos da interface sem reescrever HTML/CSS/JS.
           cp -a "$APP/." www/
-
-          cat > package.json <<'EOF'
+          cat > package.json <<'PKG'
           {
-            "name": "right-price-v219",
-            "version": "2.1.9",
+            "name": "right-price",
+            "version": "2.3.1",
             "private": true,
             "dependencies": {
               "@capacitor/core": "6.2.1",
@@ -70,44 +57,29 @@ jobs:
               "@capacitor/cli": "6.2.1"
             }
           }
-          EOF
-
+          PKG
           npm install --no-audit --no-fund
-          cat > capacitor.config.json <<'EOF'
+          cat > capacitor.config.json <<'CAP'
           {
             "appId": "br.com.vilasiria.formacaoprecos",
             "appName": "Right Price",
             "webDir": "www",
             "bundledWebRuntime": false
           }
-          EOF
-
+          CAP
           npx cap add android
           npx cap sync android
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('android/app/build.gradle')
+          s=p.read_text()
+          import re
+          s=re.sub(r'versionCode\s+\d+', 'versionCode 231', s, count=1)
+          s=re.sub(r'versionName\s+["\'][^"\']+["\']', 'versionName "2.3.1"', s, count=1)
+          p.write_text(s)
+          PY
 
-      - name: Incluir o seletor nativo de backup do ZIP
-        shell: bash
-        run: |
-          set -euo pipefail
-          JAVA_DIR="android/app/src/main/java/br/com/vilasiria/formacaoprecos"
-          mkdir -p "$JAVA_DIR"
-          cp rp-source/vsprice/android-native/SaveFilePickerPlugin.java "$JAVA_DIR/SaveFilePickerPlugin.java"
-          cat > "$JAVA_DIR/MainActivity.java" <<'EOF'
-          package br.com.vilasiria.formacaoprecos;
-
-          import android.os.Bundle;
-          import com.getcapacitor.BridgeActivity;
-
-          public class MainActivity extends BridgeActivity {
-            @Override
-            public void onCreate(Bundle savedInstanceState) {
-              registerPlugin(SaveFilePickerPlugin.class);
-              super.onCreate(savedInstanceState);
-            }
-          }
-          EOF
-
-      - name: Usar os ícones incluídos no ZIP
+      - name: Aplicar ícones originais do ZIP
         shell: bash
         run: |
           set -euo pipefail
@@ -124,30 +96,73 @@ jobs:
           cp "$SRC/icon-144.png" "$RES/mipmap-xxhdpi/ic_launcher_round.png"
           cp "$SRC/icon-192.png" "$RES/mipmap-xxxhdpi/ic_launcher.png"
           cp "$SRC/icon-192.png" "$RES/mipmap-xxxhdpi/ic_launcher_round.png"
-          # Remover XML adaptativos gerados pelo template para evitar o ícone Android padrão.
           rm -f "$RES/mipmap-anydpi-v26/ic_launcher.xml" "$RES/mipmap-anydpi-v26/ic_launcher_round.xml"
 
-      - name: Verificar que interface e ícones vieram do ZIP
+      - name: Registrar o recurso nativo de backup
         shell: bash
         run: |
           set -euo pipefail
-          cmp rp-source/vsprice/index.html www/index.html
-          grep -q 'ALIMENTOS E MATÉRIA-PRIMA CONSUMIDOS NO MÊS' android/app/src/main/assets/public/index.html
-          cmp rp-source/vsprice/icons/icon-48.png android/app/src/main/res/mipmap-mdpi/ic_launcher.png
-          cmp rp-source/vsprice/icons/icon-192.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          DEST="android/app/src/main/java/br/com/vilasiria/formacaoprecos"
+          mkdir -p "$DEST"
+          cp rp-source/vsprice/android-native/SaveFilePickerPlugin.java "$DEST/SaveFilePickerPlugin.java"
+          cat > "$DEST/MainActivity.java" <<'JAVA'
+          package br.com.vilasiria.formacaoprecos;
+          import android.os.Bundle;
+          import com.getcapacitor.BridgeActivity;
+          public class MainActivity extends BridgeActivity {
+            @Override public void onCreate(Bundle savedInstanceState) {
+              registerPlugin(SaveFilePickerPlugin.class);
+              super.onCreate(savedInstanceState);
+            }
+          }
+          JAVA
+          npx cap sync android
+          cp rp-source/vsprice/icons/icon-48.png android/app/src/main/res/mipmap-mdpi/ic_launcher.png
+          cp rp-source/vsprice/icons/icon-48.png android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png
+          cp rp-source/vsprice/icons/icon-72.png android/app/src/main/res/mipmap-hdpi/ic_launcher.png
+          cp rp-source/vsprice/icons/icon-72.png android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png
+          cp rp-source/vsprice/icons/icon-96.png android/app/src/main/res/mipmap-xhdpi/ic_launcher.png
+          cp rp-source/vsprice/icons/icon-96.png android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png
+          cp rp-source/vsprice/icons/icon-144.png android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+          cp rp-source/vsprice/icons/icon-144.png android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png
+          cp rp-source/vsprice/icons/icon-192.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+          cp rp-source/vsprice/icons/icon-192.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
 
-      - name: Compilar APK
+      - name: Compilar versão Release
         shell: bash
         run: |
           set -euo pipefail
           cd android
           chmod +x gradlew
-          ./gradlew --no-daemon assembleDebug
-          test -s app/build/outputs/apk/debug/app-debug.apk
+          ./gradlew --no-daemon assembleRelease
+          test -s app/build/outputs/apk/release/app-release-unsigned.apk
 
-      - name: Disponibilizar APK
+      - name: Assinar APK com a chave incluída no projeto
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS_SECRET: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          test -n "${ANDROID_KEYSTORE_PASSWORD:-}" || { echo "::error::Configure o segredo ANDROID_KEYSTORE_PASSWORD no GitHub."; exit 1; }
+          test -n "${ANDROID_KEY_PASSWORD:-}" || { echo "::error::Configure o segredo ANDROID_KEY_PASSWORD no GitHub."; exit 1; }
+          ALIAS="${ANDROID_KEY_ALIAS_SECRET:-vila-siria}"
+          BT="$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          UNSIGNED="android/app/build/outputs/apk/release/app-release-unsigned.apk"
+          "$ANDROID_HOME/build-tools/$BT/zipalign" -f -v 4 "$UNSIGNED" Right-Price-V2.3.1-aligned.apk
+          "$ANDROID_HOME/build-tools/$BT/apksigner" sign \
+            --ks rp-source/vsprice/signing/vila-siria-update.jks \
+            --ks-key-alias "$ALIAS" \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+            --key-pass env:ANDROID_KEY_PASSWORD \
+            --out Right-Price-V2.3.1.apk Right-Price-V2.3.1-aligned.apk
+          "$ANDROID_HOME/build-tools/$BT/apksigner" verify --verbose Right-Price-V2.3.1.apk
+          test -s Right-Price-V2.3.1.apk
+
+      - name: Disponibilizar APK gerado
         uses: actions/upload-artifact@v4
         with:
-          name: Right-Price-V2.1.9-APK
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: Right-Price-V2.3.1-APK
+          path: Right-Price-V2.3.1.apk
           if-no-files-found: error
