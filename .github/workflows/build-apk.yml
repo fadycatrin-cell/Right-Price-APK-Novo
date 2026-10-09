@@ -1,13 +1,13 @@
-name: Gerar APK Right Price V2.1.7
+name: Gerar APK Right Price V2.1.8
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-apk:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Baixar repositório
+      - name: Baixar arquivos do repositório
         uses: actions/checkout@v4
 
       - name: Configurar Java
@@ -16,29 +16,31 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Configurar Node.js
+      - name: Configurar Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Preparar arquivos do Right Price V2.1.7
+      - name: Preparar os arquivos exatos da V2.1.8
         shell: bash
         run: |
           set -euo pipefail
-          ZIP="Right_Price_V2_1_7_MOTOR_PRECOS_CORRIGIDO.zip"
-          test -f "$ZIP" || { echo "::error::Coloque $ZIP na raiz do repositório."; exit 1; }
-          mkdir -p work
-          unzip -q "$ZIP" -d work
-          test -f work/vsprice/index.html
-          mkdir -p www
-          cp -R work/vsprice/. www/
+          ZIP="Right_Price_V2_1_8_CORRECAO_CAMPO_ALIMENTOS.zip"
+          test -f "$ZIP" || { echo "::error::Envie $ZIP para a raiz do repositório."; exit 1; }
+          mkdir -p unpack www
+          unzip -q "$ZIP" -d unpack
+          test -f unpack/vsprice/index.html
+          test -f unpack/vsprice/manifest.webmanifest
+          test -f unpack/vsprice/service-worker.js
+          test -f unpack/vsprice/android-native/SaveFilePickerPlugin.java
+          grep -q 'ALIMENTOS E MATÉRIA-PRIMA CONSUMIDOS NO MÊS' unpack/vsprice/index.html
+          cp -R unpack/vsprice/. www/
           cat > package.json <<'EOF'
           {
             "name": "right-price",
-            "version": "2.1.7",
+            "version": "2.1.8",
             "private": true,
-            "description": "Right Price - formação de preços",
-            "scripts": { "build": "echo Static web assets ready" },
+            "scripts": { "build": "echo Static assets copied without modifying app UI" },
             "dependencies": {
               "@capacitor/core": "6.2.1",
               "@capacitor/android": "6.2.1"
@@ -54,24 +56,20 @@ jobs:
             "appId": "br.com.vilasiria.formacaoprecos",
             "appName": "Right Price",
             "webDir": "www",
-            "bundledWebRuntime": false,
-            "android": { "allowMixedContent": false }
+            "bundledWebRuntime": false
           }
           EOF
           npx cap add android
           npx cap sync android
 
-      - name: Integrar plugin de backup com seletor de armazenamento Android
+      - name: Registrar plugin nativo de backup
         shell: bash
         run: |
           set -euo pipefail
-          SRC="work/vsprice/android-native/SaveFilePickerPlugin.java"
-          DEST="android/app/src/main/java/br/com/vilasiria/formacaoprecos/SaveFilePickerPlugin.java"
-          test -f "$SRC"
-          mkdir -p "$(dirname "$DEST")"
-          cp "$SRC" "$DEST"
-          MAIN="android/app/src/main/java/br/com/vilasiria/formacaoprecos/MainActivity.java"
-          cat > "$MAIN" <<'EOF'
+          DEST="android/app/src/main/java/br/com/vilasiria/formacaoprecos"
+          mkdir -p "$DEST"
+          cp unpack/vsprice/android-native/SaveFilePickerPlugin.java "$DEST/SaveFilePickerPlugin.java"
+          cat > "$DEST/MainActivity.java" <<'EOF'
           package br.com.vilasiria.formacaoprecos;
 
           import android.os.Bundle;
@@ -86,20 +84,21 @@ jobs:
           }
           EOF
 
-      - name: Configurar assinatura do APK
+      - name: Configurar assinatura existente
         shell: bash
         env:
-          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          KEYSTORE="work/vsprice/signing/vila-siria-update.jks"
-          test -f "$KEYSTORE" || { echo "::error::Keystore original não encontrado no ZIP."; exit 1; }
-          mkdir -p android/app
+          KEYSTORE="unpack/vsprice/signing/vila-siria-update.jks"
+          test -f "$KEYSTORE"
+          test -n "$STORE_PASSWORD" || { echo "::error::Configure o segredo ANDROID_KEYSTORE_PASSWORD."; exit 1; }
+          test -n "$KEY_PASSWORD" || { echo "::error::Configure o segredo ANDROID_KEY_PASSWORD."; exit 1; }
           cp "$KEYSTORE" android/app/vila-siria-update.jks
           cat >> android/gradle.properties <<EOF
           RIGHTPRICE_STORE_FILE=vila-siria-update.jks
-          RIGHTPRICE_STORE_PASSWORD=${KEYSTORE_PASSWORD}
+          RIGHTPRICE_STORE_PASSWORD=${STORE_PASSWORD}
           RIGHTPRICE_KEY_ALIAS=vila-siria
           RIGHTPRICE_KEY_PASSWORD=${KEY_PASSWORD}
           EOF
@@ -109,7 +108,7 @@ jobs:
           s = p.read_text()
           marker = "    buildTypes {"
           if marker not in s:
-              raise SystemExit("Não foi possível localizar o bloco buildTypes do Gradle.")
+              raise SystemExit("Bloco buildTypes não encontrado; compilação interrompida sem alterar o app.")
           signing = """    signingConfigs {
                   release {
                       storeFile file(project.findProperty('RIGHTPRICE_STORE_FILE') ?: 'vila-siria-update.jks')
@@ -122,19 +121,27 @@ jobs:
           """
           if "RIGHTPRICE_STORE_FILE" not in s:
               s = s.replace(marker, signing + marker, 1)
-          s = s.replace("buildTypes {\n        release {", "buildTypes {\n        release {\n            signingConfig signingConfigs.release", 1)
+          if "signingConfig signingConfigs.release" not in s:
+              needle = "        release {"
+              if needle not in s:
+                  raise SystemExit("Bloco release não encontrado no Gradle.")
+              s = s.replace(needle, needle + "\n            signingConfig signingConfigs.release", 1)
           p.write_text(s)
           PY
 
-      - name: Gerar APK de release
+      - name: Verificar presença do campo antes de compilar
+        run: |
+          grep -q 'ALIMENTOS E MATÉRIA-PRIMA CONSUMIDOS NO MÊS' android/app/src/main/assets/public/index.html
+
+      - name: Compilar APK
         run: |
           cd android
           chmod +x gradlew
           ./gradlew assembleRelease
 
-      - name: Publicar APK gerado
+      - name: Disponibilizar APK
         uses: actions/upload-artifact@v4
         with:
-          name: Right-Price-V2.1.7-APK
+          name: Right-Price-V2.1.8-APK
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
