@@ -1,1 +1,132 @@
 
+name: Gerar APK Right Price
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Baixar arquivos do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Preparar Android SDK
+        shell: bash
+        run: |
+          set -e
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          test -d "$ANDROID_HOME" || {
+            echo "::error::Android SDK não encontrado."
+            exit 1
+          }
+
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -n 1)"
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager não encontrado."
+            exit 1
+          fi
+
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Extrair e preparar aplicativo
+        shell: bash
+        run: |
+          set -e
+
+          ZIP_FILE="$(find . -maxdepth 2 -type f -iname '*.zip' ! -path './.git/*' | head -n 1)"
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "::error::Envie o ZIP do Right Price para a raiz do repositório."
+            exit 1
+          fi
+
+          mkdir -p extracted
+          unzip -oq "$ZIP_FILE" -d extracted
+
+          INDEX_FILE="$(find extracted -type f -name index.html -print -quit)"
+
+          if [ -z "$INDEX_FILE" ]; then
+            echo "::error::O ZIP não contém index.html."
+            exit 1
+          fi
+
+          SOURCE_DIR="$(dirname "$INDEX_FILE")"
+          mkdir -p www
+          cp -R "$SOURCE_DIR"/. www/
+
+          if [ ! -f www/index.html ]; then
+            echo "::error::Não foi possível preparar index.html."
+            exit 1
+          fi
+
+          cat > package.json <<'EOF'
+          {
+            "name": "right-price",
+            "version": "2.1.5",
+            "private": true
+          }
+          EOF
+
+          npm install --no-audit --no-fund
+          npm install @capacitor/core@6.2.1 @capacitor/android@6.2.1 @capacitor/cli@6.2.1 --no-audit --no-fund
+
+          cat > capacitor.config.json <<'EOF'
+          {
+            "appId": "br.com.vilasiria.formacaoprecos",
+            "appName": "Right Price",
+            "webDir": "www",
+            "bundledWebRuntime": false
+          }
+          EOF
+
+          npx cap add android
+          npx cap sync android
+
+      - name: Compilar APK de teste
+        shell: bash
+        run: |
+          set -e
+          cd android
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug
+
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK" ]; then
+            echo "::error::O APK não foi gerado."
+            exit 1
+          fi
+
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          cp "$APK" "$GITHUB_WORKSPACE/output/Right-Price.apk"
+
+      - name: Publicar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Right-Price-APK
+          path: output/Right-Price.apk
+          if-no-files-found: error
+          retention-days: 14
+
