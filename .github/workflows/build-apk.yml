@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: Baixar arquivos do repositório
+      - name: Baixar projeto
         uses: actions/checkout@v4
 
       - name: Configurar Java
@@ -34,14 +34,12 @@ jobs:
         shell: bash
         run: |
           set -e
-          echo "ANDROID_HOME=$ANDROID_HOME"
           test -d "$ANDROID_HOME" || {
             echo "::error::Android SDK não encontrado."
             exit 1
           }
 
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -n 1)"
-
           if [ -z "$SDKMANAGER" ]; then
             echo "::error::sdkmanager não encontrado."
             exit 1
@@ -50,36 +48,38 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
           "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Extrair e preparar aplicativo
+      - name: Extrair ZIP original
         shell: bash
         run: |
           set -e
-
-          ZIP_FILE="$(find . -maxdepth 2 -type f -iname '*.zip' ! -path './.git/*' | head -n 1)"
+          ZIP_FILE="$(find . -maxdepth 2 -type f -name 'Right_Price_V2_1_5_AJUSTES_BACKUP_IDIOMAS_ABA.zip' -print -quit)"
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "::error::Envie o ZIP do Right Price para a raiz do repositório."
+            echo "::error::Envie o ZIP original para a raiz do repositório."
             exit 1
           fi
 
           mkdir -p extracted
           unzip -oq "$ZIP_FILE" -d extracted
 
-          INDEX_FILE="$(find extracted -type f -name index.html -print -quit)"
+          SOURCE_DIR="$(find extracted -type f -path '*/vsprice/index.html' -print -quit | xargs -r dirname)"
 
-          if [ -z "$INDEX_FILE" ]; then
-            echo "::error::O ZIP não contém index.html."
+          if [ -z "$SOURCE_DIR" ] || [ ! -f "$SOURCE_DIR/icons/icon-512.png" ]; then
+            echo "::error::Não encontrei o index.html ou o ícone original icon-512.png."
             exit 1
           fi
 
-          SOURCE_DIR="$(dirname "$INDEX_FILE")"
           mkdir -p www
           cp -R "$SOURCE_DIR"/. www/
 
-          if [ ! -f www/index.html ]; then
-            echo "::error::Não foi possível preparar index.html."
-            exit 1
-          fi
+          test -f www/index.html
+          test -f www/manifest.webmanifest
+          test -f www/icons/icon-512.png
+
+      - name: Preparar Capacitor
+        shell: bash
+        run: |
+          set -e
 
           cat > package.json <<'EOF'
           {
@@ -104,7 +104,53 @@ jobs:
           npx cap add android
           npx cap sync android
 
-      - name: Compilar APK de teste
+      - name: Aplicar ícone original do Right Price
+        shell: bash
+        run: |
+          set -e
+          python -m pip install --quiet Pillow
+
+          python - <<'PY'
+          from PIL import Image
+          from pathlib import Path
+
+          source = Path("www/icons/icon-512.png")
+          if not source.is_file():
+              raise SystemExit("Ícone original não encontrado.")
+
+          image = Image.open(source).convert("RGBA")
+
+          sizes = {
+              "mipmap-mdpi": 48,
+              "mipmap-hdpi": 72,
+              "mipmap-xhdpi": 96,
+              "mipmap-xxhdpi": 144,
+              "mipmap-xxxhdpi": 192,
+          }
+
+          res = Path("android/app/src/main/res")
+
+          for folder, size in sizes.items():
+              target_dir = res / folder
+              target_dir.mkdir(parents=True, exist_ok=True)
+              icon = image.resize((size, size), Image.Resampling.LANCZOS)
+              icon.save(target_dir / "ic_launcher.png")
+              icon.save(target_dir / "ic_launcher_round.png")
+
+          # Remove os ícones adaptativos padrão do Capacitor,
+          # para que o Android use os PNGs derivados do ícone original.
+          for folder in ("mipmap-anydpi-v26", "mipmap-anydpi"):
+              target_dir = res / folder
+              if target_dir.exists():
+                  for name in ("ic_launcher.xml", "ic_launcher_round.xml"):
+                      file = target_dir / name
+                      if file.exists():
+                          file.unlink()
+
+          print("Ícone original aplicado aos recursos Android.")
+          PY
+
+      - name: Compilar APK
         shell: bash
         run: |
           set -e
@@ -113,14 +159,21 @@ jobs:
           ./gradlew --no-daemon assembleDebug
 
           APK="app/build/outputs/apk/debug/app-debug.apk"
-
           if [ ! -f "$APK" ]; then
-            echo "::error::O APK não foi gerado."
+            echo "::error::APK não foi gerado."
             exit 1
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/output"
           cp "$APK" "$GITHUB_WORKSPACE/output/Right-Price.apk"
+
+      - name: Verificar APK e ícone
+        shell: bash
+        run: |
+          set -e
+          test -s output/Right-Price.apk
+          test -s android/app/src/main/res/mipmap-mdpi/ic_launcher.png
+          echo "APK gerado e recursos do ícone original encontrados."
 
       - name: Publicar APK
         uses: actions/upload-artifact@v4
@@ -129,4 +182,3 @@ jobs:
           path: output/Right-Price.apk
           if-no-files-found: error
           retention-days: 14
-
