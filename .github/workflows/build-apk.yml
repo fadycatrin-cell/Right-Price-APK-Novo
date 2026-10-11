@@ -1,4 +1,4 @@
-name: Right Price - Gerar APK V2.1.6
+name: Right Price V2.3.1 - Gerar APK do ZIP correto
 
 on:
   workflow_dispatch:
@@ -7,36 +7,61 @@ permissions:
   contents: read
 
 concurrency:
-  group: right-price-build
+  group: right-price-apk
   cancel-in-progress: false
 
 jobs:
   build:
-    name: Compilar APK Android
+    name: Preparar projeto e compilar APK
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     steps:
-      - name: Baixar código do projeto
+      - name: Baixar repositório
         uses: actions/checkout@v4
 
-      - name: Localizar projeto Android
+      - name: Encontrar e validar ZIP específico
         shell: bash
         run: |
           set -euo pipefail
+          ZIP="./Right_Price_V2_3_1_MOTOR_PRECOS_AUDITADO.zip"
 
-          echo "Arquivos encontrados na raiz:"
-          ls -la
-
-          if [ -f gradlew ]; then
-            echo "PROJECT_DIR=." >> "$GITHUB_ENV"
-          elif [ -f android/gradlew ]; then
-            echo "PROJECT_DIR=android" >> "$GITHUB_ENV"
-          else
-            echo "ERRO: gradlew não encontrado na raiz nem em android/."
-            echo "Confira se o repositório contém o projeto Android completo."
+          if [ ! -f "$ZIP" ]; then
+            echo "ERRO: não encontrei $ZIP na raiz do repositório."
+            echo "Envie o ZIP com esse nome para a raiz do repositório GitHub."
+            echo "Arquivos ZIP encontrados:"
+            find . -type f -iname '*.zip' -print || true
             exit 1
           fi
+
+          python3 - <<'PY'
+          import zipfile, sys
+          p = "Right_Price_V2_3_1_MOTOR_PRECOS_AUDITADO.zip"
+          try:
+              with zipfile.ZipFile(p) as z:
+                  bad = z.testzip()
+                  names = z.namelist()
+                  if bad:
+                      raise SystemExit(f"ERRO: arquivo ZIP danificado: {bad}")
+                  required = [
+                      "vsprice/index.html",
+                      "vsprice/manifest.webmanifest",
+                      "vsprice/icons/icon-512.png",
+                      "vsprice/android-native/SaveFilePickerPlugin.java",
+                  ]
+                  missing = [x for x in required if x not in names]
+                  if missing:
+                      raise SystemExit("ERRO: ZIP não corresponde ao projeto esperado. Faltando: " + ", ".join(missing))
+                  print("ZIP validado; arquivos esperados encontrados.")
+          except zipfile.BadZipFile:
+              raise SystemExit("ERRO: o arquivo informado não é um ZIP válido.")
+          PY
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: ''
 
       - name: Configurar Java
         uses: actions/setup-java@v5
@@ -44,46 +69,170 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Preparar Gradle
+      - name: Extrair aplicativo e criar projeto Capacitor
         shell: bash
         run: |
           set -euo pipefail
-          cd "$PROJECT_DIR"
-          chmod +x gradlew
-          ./gradlew --version
 
-      - name: Compilar APK de release
+          rm -rf work-right-price
+          mkdir -p work-right-price/www
+          python3 - <<'PY'
+          import zipfile
+          with zipfile.ZipFile("Right_Price_V2_3_1_MOTOR_PRECOS_AUDITADO.zip") as z:
+              z.extractall("work-right-price/extracted")
+          PY
+
+          cp -a work-right-price/extracted/vsprice/. work-right-price/www/
+          cd work-right-price
+
+          cat > package.json <<'EOF'
+          {
+            "name": "right-price",
+            "version": "2.3.1",
+            "private": true,
+            "description": "Right Price",
+            "scripts": {
+              "build:android": "cap sync android"
+            },
+            "dependencies": {
+              "@capacitor/android": "6.2.1",
+              "@capacitor/core": "6.2.1"
+            },
+            "devDependencies": {
+              "@capacitor/cli": "6.2.1"
+            }
+          }
+          EOF
+
+          cat > capacitor.config.json <<'EOF'
+          {
+            "appId": "br.com.vilasiria.formacaoprecos",
+            "appName": "Right Price",
+            "webDir": "www",
+            "bundledWebRuntime": false,
+            "plugins": {}
+          }
+          EOF
+
+          npm install --no-audit --no-fund
+          npx cap add android
+          npx cap sync android
+
+      - name: Registrar plugin nativo de backup
         shell: bash
         run: |
           set -euo pipefail
-          cd "$PROJECT_DIR"
-          ./gradlew --no-daemon --stacktrace assembleRelease
+          cd work-right-price
 
-      - name: Localizar e validar APK
+          JAVA_DIR="android/app/src/main/java/br/com/vilasiria/formacaoprecos"
+          mkdir -p "$JAVA_DIR"
+          cp extracted/vsprice/android-native/SaveFilePickerPlugin.java "$JAVA_DIR/SaveFilePickerPlugin.java"
+
+          cat > "$JAVA_DIR/MainActivity.java" <<'EOF'
+          package br.com.vilasiria.formacaoprecos;
+
+          import android.os.Bundle;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  registerPlugin(SaveFilePickerPlugin.class);
+                  super.onCreate(savedInstanceState);
+              }
+          }
+          EOF
+
+          # Confirma que a atividade e o plugin estão no pacote esperado.
+          test -s "$JAVA_DIR/MainActivity.java"
+          test -s "$JAVA_DIR/SaveFilePickerPlugin.java"
+
+      - name: Preservar ícone e nome do aplicativo
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/right-price-apk"
+          cd work-right-price
 
-          find "$PROJECT_DIR" \
-            -type f \
-            -path '*/build/outputs/apk/release/*.apk' \
-            -exec cp {} "$RUNNER_TEMP/right-price-apk/" \;
+          python3 -m pip install --quiet Pillow
+          python3 - <<'PY'
+          from PIL import Image
+          from pathlib import Path
+          import shutil
 
-          if ! find "$RUNNER_TEMP/right-price-apk" \
-            -maxdepth 1 -type f -name '*.apk' | grep -q .; then
-            echo "ERRO: nenhum APK de release foi gerado."
+          source = Path("www/icons/icon-512.png")
+          if not source.is_file():
+              raise SystemExit("ERRO: ícone original icon-512.png não encontrado.")
+          original = Image.open(source).convert("RGBA")
+
+          res = Path("android/app/src/main/res")
+          sizes = {
+              "mipmap-mdpi": 48,
+              "mipmap-hdpi": 72,
+              "mipmap-xhdpi": 96,
+              "mipmap-xxhdpi": 144,
+              "mipmap-xxxhdpi": 192,
+          }
+          for folder, size in sizes.items():
+              target = res / folder
+              target.mkdir(parents=True, exist_ok=True)
+              icon = original.resize((size, size), Image.Resampling.LANCZOS)
+              icon.save(target / "ic_launcher.png")
+              icon.save(target / "ic_launcher_round.png")
+
+          # Remove ícones adaptativos padrão do Capacitor para que o Android
+          # use as versões rasterizadas do ícone original do projeto.
+          for folder in ("mipmap-anydpi-v26",):
+              p = res / folder
+              if p.exists():
+                  for name in ("ic_launcher.xml", "ic_launcher_round.xml"):
+                      f = p / name
+                      if f.exists():
+                          f.unlink()
+
+          strings = res / "values" / "strings.xml"
+          strings.parent.mkdir(parents=True, exist_ok=True)
+          if strings.exists():
+              content = strings.read_text(encoding="utf-8")
+              import re
+              if re.search(r'<string name="app_name">.*?</string>', content, re.S):
+                  content = re.sub(r'<string name="app_name">.*?</string>',
+                                   '<string name="app_name">Right Price</string>', content, count=1, flags=re.S)
+              else:
+                  content = content.replace("</resources>",
+                      '    <string name="app_name">Right Price</string>\\n</resources>')
+              strings.write_text(content, encoding="utf-8")
+          else:
+              strings.write_text('<?xml version="1.0" encoding="utf-8"?>\\n<resources>\\n    <string name="app_name">Right Price</string>\\n</resources>\\n', encoding="utf-8")
+          PY
+
+      - name: Compilar APK de teste
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd work-right-price
+          chmod +x android/gradlew
+          cd android
+          ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Validar APK gerado
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="work-right-price/android/app/build/outputs/apk/debug/app-debug.apk"
+          if [ ! -s "$APK" ]; then
+            echo "ERRO: o Gradle não gerou o APK esperado: $APK"
+            find work-right-price/android/app/build/outputs -type f -name '*.apk' -print || true
             exit 1
           fi
+          unzip -t "$APK" >/dev/null
+          mkdir -p output
+          cp "$APK" output/Right-Price-V2.3.1-debug.apk
+          sha256sum output/Right-Price-V2.3.1-debug.apk
 
-          for APK in "$RUNNER_TEMP"/right-price-apk/*.apk; do
-            unzip -t "$APK" >/dev/null
-          done
-
-      - name: Publicar APK gerado
+      - name: Disponibilizar APK
         uses: actions/upload-artifact@v4
         with:
-          name: Right-Price-V2.1.6-APK
-          path: ${{ runner.temp }}/right-price-apk/*.apk
+          name: Right-Price-V2.3.1-APK
+          path: output/Right-Price-V2.3.1-debug.apk
           if-no-files-found: error
           retention-days: 14
