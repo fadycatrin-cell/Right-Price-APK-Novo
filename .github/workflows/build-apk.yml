@@ -1,5 +1,5 @@
 
-name: Right Price V2.3.8 - Gerar APK
+name: Right Price V2.4.0 - Gerar APK sem alterar o app
 
 on:
   workflow_dispatch:
@@ -7,52 +7,16 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: right-price-v2-3-8-apk
-  cancel-in-progress: false
-
 jobs:
   build:
-    name: Validar versão, preservar identidade e compilar APK
     runs-on: ubuntu-22.04
     timeout-minutes: 40
 
     steps:
-      - name: Baixar repositório
+      - name: Baixar repositorio
         uses: actions/checkout@v4
 
-      - name: Validar ZIP exato e íntegro
-        shell: bash
-        run: |
-          set -euo pipefail
-          ZIP="Right_Price_V2_3_8_MARKUP_SIMPLIFICADO.zip"
-          test -f "$ZIP" || { echo "::error::Coloque $ZIP na raiz do repositório."; find . -maxdepth 2 -type f -iname '*.zip' -print || true; exit 1; }
-          python3 - <<'PY'
-          import zipfile
-          p = "Right_Price_V2_3_8_MARKUP_SIMPLIFICADO.zip"
-          required = [
-              "vsprice/index.html",
-              "vsprice/manifest.webmanifest",
-              "vsprice/icons/icon-192.png",
-              "vsprice/icons/icon-512.png",
-              "vsprice/android-native/SaveFilePickerPlugin.java",
-              "vsprice/signing/vila-siria-update.jks",
-          ]
-          try:
-              with zipfile.ZipFile(p) as z:
-                  bad = z.testzip()
-                  if bad:
-                      raise SystemExit(f"::error::ZIP danificado: {bad}")
-                  names = set(z.namelist())
-                  missing = [x for x in required if x not in names]
-                  if missing:
-                      raise SystemExit("::error::ZIP não corresponde à versão esperada; faltam: " + ", ".join(missing))
-          except zipfile.BadZipFile:
-              raise SystemExit("::error::Arquivo inválido: não é um ZIP íntegro.")
-          print("ZIP da V2.3.8 validado.")
-          PY
-
-      - name: Configurar Node.js e Java
+      - name: Configurar Node e Java
         uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -62,35 +26,69 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Extrair os arquivos originais e preparar Capacitor
+      - name: Validar ZIP original
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="Right_Price_V2_4_0_MARKUP_SIMPLIFICADO.zip"
+          test -f "$ZIP" || {
+            echo "::error::Coloque o ZIP V2.4.0 na raiz do repositorio."
+            exit 1
+          }
+
+          python3 - <<'PY'
+          import zipfile
+          p = "Right_Price_V2_4_0_MARKUP_SIMPLIFICADO.zip"
+          with zipfile.ZipFile(p) as z:
+              bad = z.testzip()
+              if bad:
+                  raise SystemExit(f"ZIP danificado: {bad}")
+              required = [
+                  "vsprice/index.html",
+                  "vsprice/manifest.webmanifest",
+                  "vsprice/icons/icon-192.png",
+                  "vsprice/icons/icon-512.png",
+                  "vsprice/android-native/SaveFilePickerPlugin.java",
+                  "vsprice/signing/vila-siria-update.jks",
+              ]
+              missing = [x for x in required if x not in z.namelist()]
+              if missing:
+                  raise SystemExit("Arquivos ausentes: " + ", ".join(missing))
+          print("ZIP validado.")
+          PY
+
+      - name: Extrair arquivos originais sem modificar o app
         shell: bash
         run: |
           set -euo pipefail
           rm -rf right-price-build
-          mkdir -p right-price-build/extracted right-price-build/www
+          mkdir -p right-price-build
           python3 - <<'PY'
           import zipfile
-          with zipfile.ZipFile("Right_Price_V2_3_8_MARKUP_SIMPLIFICADO.zip") as z:
-              z.extractall("right-price-build/extracted")
+          with zipfile.ZipFile("Right_Price_V2_4_0_MARKUP_SIMPLIFICADO.zip") as z:
+              z.extractall("right-price-build/source")
           PY
-          cp -a right-price-build/extracted/vsprice/. right-price-build/www/
-          cp right-price-build/extracted/vsprice/signing/vila-siria-update.jks right-price-build/vila-siria-update.jks
+
+          mkdir -p right-price-build/www
+          cp -a right-price-build/source/vsprice/. right-price-build/www/
+          cp right-price-build/source/vsprice/signing/vila-siria-update.jks right-price-build/vila-siria-update.jks
+
           cd right-price-build
           cat > package.json <<'JSON'
           {
             "name": "right-price",
-            "version": "2.3.8",
+            "version": "2.4.0",
             "private": true,
-            "description": "Right Price",
             "dependencies": {
-              "@capacitor/android": "6.2.1",
-              "@capacitor/core": "6.2.1"
+              "@capacitor/core": "6.2.1",
+              "@capacitor/android": "6.2.1"
             },
             "devDependencies": {
               "@capacitor/cli": "6.2.1"
             }
           }
           JSON
+
           cat > capacitor.config.json <<'JSON'
           {
             "appId": "br.com.vilasiria.formacaoprecos",
@@ -99,22 +97,46 @@ jobs:
             "bundledWebRuntime": false
           }
           JSON
+
           npm install --no-audit --no-fund
           npx cap add android
           npx cap sync android
+
+      - name: Conferir se os arquivos do aplicativo foram preservados
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd right-price-build
+
+          cmp source/vsprice/index.html www/index.html
+          cmp source/vsprice/manifest.webmanifest www/manifest.webmanifest
+
+          for f in source/vsprice/icons/*.png; do
+            cmp "$f" "www/icons/$(basename "$f")"
+          done
+
+          cmp source/vsprice/android-native/SaveFilePickerPlugin.java \
+              source/vsprice/android-native/SaveFilePickerPlugin.java
+
+          echo "Arquivos originais conferidos sem alteracoes."
 
       - name: Integrar plugin de backup original
         shell: bash
         run: |
           set -euo pipefail
           cd right-price-build
+
           JAVA_DIR="android/app/src/main/java/br/com/vilasiria/formacaoprecos"
           mkdir -p "$JAVA_DIR"
-          cp extracted/vsprice/android-native/SaveFilePickerPlugin.java "$JAVA_DIR/SaveFilePickerPlugin.java"
+
+          cp source/vsprice/android-native/SaveFilePickerPlugin.java "$JAVA_DIR/"
+
           cat > "$JAVA_DIR/MainActivity.java" <<'JAVA'
           package br.com.vilasiria.formacaoprecos;
+
           import android.os.Bundle;
           import com.getcapacitor.BridgeActivity;
+
           public class MainActivity extends BridgeActivity {
               @Override
               public void onCreate(Bundle savedInstanceState) {
@@ -123,130 +145,120 @@ jobs:
               }
           }
           JAVA
-          test -s "$JAVA_DIR/SaveFilePickerPlugin.java"
-          test -s "$JAVA_DIR/MainActivity.java"
 
-      - name: Aplicar nome, ícone e versão
+      - name: Configurar nome e versao Android
         shell: bash
         run: |
           set -euo pipefail
           cd right-price-build
-          python3 -m pip install --quiet Pillow
+
           python3 - <<'PY'
-          from PIL import Image
           from pathlib import Path
           import re
 
-          res = Path("android/app/src/main/res")
-          icon_path = Path("www/icons/icon-512.png")
-          if not icon_path.is_file():
-              raise SystemExit("::error::Ícone original ausente.")
-
-          original = Image.open(icon_path).convert("RGBA")
-          for folder, size in {
-              "mipmap-mdpi":48,
-              "mipmap-hdpi":72,
-              "mipmap-xhdpi":96,
-              "mipmap-xxhdpi":144,
-              "mipmap-xxxhdpi":192
-          }.items():
-              target = res / folder
-              target.mkdir(parents=True, exist_ok=True)
-              img = original.resize((size, size), Image.Resampling.LANCZOS)
-              img.save(target / "ic_launcher.png")
-              img.save(target / "ic_launcher_round.png")
-
-          adaptive = res / "mipmap-anydpi-v26"
-          if adaptive.exists():
-              for name in ("ic_launcher.xml", "ic_launcher_round.xml"):
-                  f = adaptive / name
-                  if f.exists():
-                      f.unlink()
-
-          strings = res / "values/strings.xml"
-          strings.parent.mkdir(parents=True, exist_ok=True)
-          content = strings.read_text(encoding="utf-8") if strings.exists() else '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n</resources>\n'
+          root = Path("android/app/src/main/res")
+          strings = root / "values/strings.xml"
+          content = strings.read_text(encoding="utf-8")
 
           if re.search(r'<string name="app_name">.*?</string>', content, re.S):
               content = re.sub(
                   r'<string name="app_name">.*?</string>',
                   '<string name="app_name">Right Price</string>',
-                  content, count=1, flags=re.S
+                  content,
+                  count=1,
+                  flags=re.S
               )
           else:
               content = content.replace(
                   "</resources>",
-                  '    <string name="app_name">Right Price</string>\n</resources>'
+                  '<string name="app_name">Right Price</string>\n</resources>'
               )
 
           strings.write_text(content, encoding="utf-8")
+
           gradle = Path("android/app/build.gradle")
           g = gradle.read_text(encoding="utf-8")
 
-          if not re.search(r'versionCode\s+\d+', g) or not re.search(r'versionName\s+"[^"]+"', g):
-              raise SystemExit("::error::Não foi possível localizar versionCode/versionName no build.gradle.")
+          if not re.search(r'versionCode\s+\d+', g):
+              raise SystemExit("versionCode nao encontrado.")
+          if not re.search(r'versionName\s+"[^"]+"', g):
+              raise SystemExit("versionName nao encontrado.")
 
-          g = re.sub(r'versionCode\s+\d+', 'versionCode 2304', g, count=1)
-          g = re.sub(r'versionName\s+"[^"]+"', 'versionName "2.3.8"', g, count=1)
+          g = re.sub(r'versionCode\s+\d+', 'versionCode 2305', g, count=1)
+          g = re.sub(r'versionName\s+"[^"]+"', 'versionName "2.4.0"', g, count=1)
           gradle.write_text(g, encoding="utf-8")
           PY
 
-          cmp extracted/vsprice/index.html www/index.html
-          cmp extracted/vsprice/manifest.webmanifest www/manifest.webmanifest
-          echo "HTML, manifest, nome e ícone verificados."
+          mkdir -p android/app/src/main/res/mipmap-hdpi
+          mkdir -p android/app/src/main/res/mipmap-mdpi
+          mkdir -p android/app/src/main/res/mipmap-xhdpi
+          mkdir -p android/app/src/main/res/mipmap-xxhdpi
+          mkdir -p android/app/src/main/res/mipmap-xxxhdpi
 
-      - name: Compilar APK release
+          cp www/icons/icon-192.png android/app/src/main/res/mipmap-hdpi/ic_launcher.png
+          cp www/icons/icon-192.png android/app/src/main/res/mipmap-mdpi/ic_launcher.png
+          cp www/icons/icon-192.png android/app/src/main/res/mipmap-xhdpi/ic_launcher.png
+          cp www/icons/icon-192.png android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+          cp www/icons/icon-192.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+
+      - name: Compilar APK
         shell: bash
         run: |
           set -euo pipefail
           cd right-price-build/android
           chmod +x gradlew
-          ./gradlew --no-daemon --stacktrace assembleRelease
+          ./gradlew --no-daemon assembleRelease
 
-      - name: Assinar com a chave original e validar APK
+      - name: Assinar APK com chave original
         shell: bash
+        env:
+          KS_PASS: ${{ secrets.RIGHT_PRICE_KEYSTORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.RIGHT_PRICE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           cd right-price-build
 
-          KEYSTORE="vila-siria-update.jks"
-          KEYSTORE_PASSWORD="VSFormacao2026"
-          KEY_PASSWORD="VSFormacao2026"
-
-          test -s "$KEYSTORE" || { echo "::error::Chave original .jks ausente."; exit 1; }
-
-          UNSIGNED="android/app/build/outputs/apk/release/app-release-unsigned.apk"
-          if [ ! -s "$UNSIGNED" ]; then
-            echo "::error::APK release unsigned não encontrado; arquivos encontrados:"
-            find android/app/build/outputs -type f -name '*.apk' -print || true
+          test -s vila-siria-update.jks || {
+            echo "::error::Chave original ausente."
             exit 1
-          fi
+          }
+
+          APK="android/app/build/outputs/apk/release/app-release-unsigned.apk"
+          test -s "$APK" || {
+            echo "::error::APK nao encontrado."
+            find android/app/build/outputs -type f -name '*.apk' -print
+            exit 1
+          }
+
+          test -n "$KS_PASS" || {
+            echo "::error::Configure o segredo RIGHT_PRICE_KEYSTORE_PASSWORD no GitHub."
+            exit 1
+          }
+          test -n "$KEY_PASS" || {
+            echo "::error::Configure o segredo RIGHT_PRICE_KEY_PASSWORD no GitHub."
+            exit 1
+          }
 
           BUILD_TOOLS="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
-          test -n "$BUILD_TOOLS" || { echo "::error::Android Build Tools não encontrados."; exit 1; }
 
-          "$BUILD_TOOLS/zipalign" -f -v 4 "$UNSIGNED" right-price-aligned.apk
-
-          export KS_PASS="$KEYSTORE_PASSWORD"
-          export KEY_PASS="$KEY_PASSWORD"
+          "$BUILD_TOOLS/zipalign" -f -v 4 "$APK" right-price-aligned.apk
 
           "$BUILD_TOOLS/apksigner" sign \
-            --ks "$KEYSTORE" \
+            --ks vila-siria-update.jks \
             --ks-key-alias vila-siria \
             --ks-pass env:KS_PASS \
             --key-pass env:KEY_PASS \
-            --out Right-Price-V2.3.8-Markup-Simplificado.apk \
+            --out Right-Price-V2.4.0.apk \
             right-price-aligned.apk
 
-          "$BUILD_TOOLS/apksigner" verify --verbose Right-Price-V2.3.8-Markup-Simplificado.apk
-          unzip -t Right-Price-V2.3.8-Markup-Simplificado.apk >/dev/null
-          sha256sum Right-Price-V2.3.8-Markup-Simplificado.apk
-          rm -f right-price-aligned.apk
+          "$BUILD_TOOLS/apksigner" verify --verbose Right-Price-V2.4.0.apk
+          unzip -t Right-Price-V2.4.0.apk >/dev/null
+          sha256sum Right-Price-V2.4.0.apk
 
-      - name: Disponibilizar APK final
+      - name: Disponibilizar APK
         uses: actions/upload-artifact@v4
         with:
-          name: Right-Price-V2.3.8-APK
-          path: right-price-build/Right-Price-V2.3.8-Markup-Simplificado.apk
+          name: Right-Price-V2.4.0-APK
+          path: right-price-build/Right-Price-V2.4.0.apk
           if-no-files-found: error
           retention-days: 14
