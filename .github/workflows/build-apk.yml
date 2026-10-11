@@ -1,5 +1,5 @@
 
-name: Gerar APK Right Price V2.4.0
+name: Compilar Right Price V2.4.0
 
 on:
   workflow_dispatch:
@@ -13,9 +13,9 @@ permissions:
 
 jobs:
   build:
-    name: Compilar Right Price
+    name: Gerar APK Right Price
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
       - name: Baixar repositório
@@ -25,16 +25,61 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: ""
 
-      - name: Configurar Java
+      - name: Configurar Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
       - name: Configurar Android SDK
-        uses: android-actions/setup-android@v3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+
+          if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
+            SDK="$RUNNER_TEMP/android-sdk"
+            mkdir -p "$SDK"
+          fi
+
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+          echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+
+          if ! find "$SDK/cmdline-tools" \
+            -name sdkmanager -type f 2>/dev/null | grep -q .; then
+
+            mkdir -p "$SDK/cmdline-tools"
+            cd "$RUNNER_TEMP"
+
+            curl -fL --retry 3 \
+              "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" \
+              -o android-command-tools.zip
+
+            mkdir -p android-cmd-tools
+            unzip -q android-command-tools.zip -d android-cmd-tools
+
+            mkdir -p "$SDK/cmdline-tools/latest"
+            cp -a android-cmd-tools/cmdline-tools/. \
+              "$SDK/cmdline-tools/latest/"
+          fi
+
+          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+
+          test -x "$SDKMANAGER"
+
+          yes | "$SDKMANAGER" --sdk_root="$SDK" --licenses \
+            >/dev/null || true
+
+          "$SDKMANAGER" --sdk_root="$SDK" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+          echo "Android SDK configurado."
 
       - name: Validar ZIP original
         shell: bash
@@ -44,7 +89,7 @@ jobs:
           ZIP="Right_Price_V2_4_0_MARKUP_SIMPLIFICADO.zip"
 
           if [ ! -f "$ZIP" ]; then
-            echo "::error::Não encontrei $ZIP na raiz do repositório."
+            echo "::error::ZIP original não encontrado na raiz."
             exit 1
           fi
 
@@ -55,7 +100,7 @@ jobs:
           unzip -Z1 "$ZIP" | grep -qx 'vsprice/icons/icon-192.png'
           unzip -Z1 "$ZIP" | grep -qx 'vsprice/icons/icon-512.png'
 
-      - name: Extrair arquivos originais sem modificar o aplicativo
+      - name: Extrair arquivos originais
         shell: bash
         run: |
           set -euo pipefail
@@ -69,31 +114,19 @@ jobs:
 
           test -s right-price-build/www/index.html
           test -s right-price-build/www/manifest.webmanifest
-          test -s right-price-build/www/service-worker.js
 
-          sha256sum right-price-build/www/index.html
-
-      - name: Conferir e preservar os arquivos web
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          test -s right-price-build/www/index.html
-          test -s right-price-build/www/icons/icon-192.png
-          test -s right-price-build/www/icons/icon-512.png
-
-          echo "Arquivos originais do aplicativo preservados."
-
-      - name: Criar configuração Android
+      - name: Criar projeto Android
         shell: bash
         working-directory: right-price-build
         run: |
           set -euo pipefail
 
           npm init -y
+
           npm install --save-exact \
             @capacitor/core@6.2.1 \
             @capacitor/android@6.2.1
+
           npm install --save-dev --save-exact \
             @capacitor/cli@6.2.1
 
@@ -112,7 +145,7 @@ jobs:
           npx cap add android
           npx cap sync android
 
-      - name: Integrar plugin original de backup
+      - name: Integrar plugin de backup
         shell: bash
         working-directory: right-price-build
         run: |
@@ -140,15 +173,13 @@ jobs:
           }
           EOF
 
-      - name: Configurar nome, versão e ícones
+      - name: Configurar nome e versão
         shell: bash
         working-directory: right-price-build
         run: |
           set -euo pipefail
 
-          STRINGS="android/app/src/main/res/values/strings.xml"
-
-          cat > "$STRINGS" <<'EOF'
+          cat > android/app/src/main/res/values/strings.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
               <string name="app_name">Right Price</string>
@@ -160,22 +191,24 @@ jobs:
 
           GRADLE="android/app/build.gradle"
 
-          if [ ! -f "$GRADLE" ]; then
-            echo "::error::Arquivo android/app/build.gradle não encontrado."
-            exit 1
-          fi
+          grep -q 'applicationId' "$GRADLE"
+          grep -q 'versionCode' "$GRADLE"
+          grep -q 'versionName' "$GRADLE"
 
           sed -i \
             's/applicationId .*/applicationId "br.com.vilasiria.formacaoprecos"/' \
             "$GRADLE"
 
-          sed -i \
-            's/versionCode .*/versionCode 2305/' \
-            "$GRADLE"
+          sed -i 's/versionCode .*/versionCode 2305/' "$GRADLE"
+          sed -i 's/versionName .*/versionName "2.4.0"/' "$GRADLE"
 
-          sed -i \
-            's/versionName .*/versionName "2.4.0"/' \
-            "$GRADLE"
+          npx cap sync android
+
+      - name: Restaurar ícones do ZIP
+        shell: bash
+        working-directory: right-price-build
+        run: |
+          set -euo pipefail
 
           ICONS="vsprice/icons"
           RES="android/app/src/main/res"
@@ -191,28 +224,24 @@ jobs:
             folder="${item%%:*}"
             file="${item#*:}"
 
+            test -s "$ICONS/$file"
             mkdir -p "$RES/$folder"
+
             cp "$ICONS/$file" "$RES/$folder/ic_launcher.png"
             cp "$ICONS/$file" "$RES/$folder/ic_launcher_round.png"
           done
 
-          npx cap sync android
-
-      - name: Verificar arquivos antes da compilação
+      - name: Conferir arquivos antes da compilação
         shell: bash
         working-directory: right-price-build
         run: |
           set -euo pipefail
 
           test -s www/index.html
-          test -s www/service-worker.js
+          test -s www/manifest.webmanifest
+          test -s android/gradlew
           test -s android/app/src/main/java/br/com/vilasiria/formacaoprecos/SaveFilePickerPlugin.java
           test -s android/app/src/main/java/br/com/vilasiria/formacaoprecos/MainActivity.java
-
-          grep -q 'applicationId "br.com.vilasiria.formacaoprecos"' \
-            android/app/build.gradle
-
-          grep -q 'versionName "2.4.0"' android/app/build.gradle
 
       - name: Compilar APK sem senha
         shell: bash
@@ -221,19 +250,19 @@ jobs:
           set -euo pipefail
 
           chmod +x gradlew
+
+          export ANDROID_HOME="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+
           ./gradlew --no-daemon clean assembleDebug
 
           APK="app/build/outputs/apk/debug/app-debug.apk"
-
-          if [ ! -s "$APK" ]; then
-            echo "::error::A compilação terminou sem produzir o APK."
-            exit 1
-          fi
+          test -s "$APK"
 
           mkdir -p ../apk-final
           cp "$APK" ../apk-final/Right-Price-V2.4.0.apk
 
-      - name: Verificar assinatura automática do APK
+      - name: Verificar assinatura
         shell: bash
         working-directory: right-price-build/android
         run: |
@@ -243,14 +272,11 @@ jobs:
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" \
             -name apksigner -type f | sort -V | tail -n 1)"
 
-          if [ -z "$APKSIGNER" ] || [ ! -x "$APKSIGNER" ]; then
-            echo "::error::Ferramenta apksigner não encontrada."
-            exit 1
-          fi
-
+          test -x "$APKSIGNER"
           "$APKSIGNER" verify "$APK"
-          ls -lh "$APK"
+
           sha256sum "$APK"
+          ls -lh "$APK"
 
       - name: Disponibilizar APK
         uses: actions/upload-artifact@v4
