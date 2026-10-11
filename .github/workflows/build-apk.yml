@@ -182,18 +182,14 @@ jobs:
           ./gradlew --no-daemon --stacktrace assembleRelease
 
       - name: Assinar com a chave original e validar APK
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         shell: bash
         run: |
           set -euo pipefail
           cd right-price-build
-          if [ -z "${KEYSTORE_PASSWORD:-}" ] || [ -z "${KEY_PASSWORD:-}" ]; then
-            echo "::error::Configure os Secrets ANDROID_KEYSTORE_PASSWORD e ANDROID_KEY_PASSWORD no GitHub antes de executar."
-            exit 1
-          fi
+          # Mantém o mesmo método de assinatura usado no gerador anterior do Right Price.
           KEYSTORE="vila-siria-update.jks"
+          KEYSTORE_PASSWORD="VSFormacao2026"
+          KEY_PASSWORD="VSFormacao2026"
           test -s "$KEYSTORE" || { echo "::error::Chave original .jks ausente."; exit 1; }
           UNSIGNED="android/app/build/outputs/apk/release/app-release-unsigned.apk"
           if [ ! -s "$UNSIGNED" ]; then
