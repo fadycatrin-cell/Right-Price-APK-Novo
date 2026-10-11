@@ -1,149 +1,99 @@
-name: Right Price V2.3.1 — APK Debug sem senha
+name: Right Price - Gerar APK V2.1.6
 
 on:
   workflow_dispatch:
 
-# Este workflow gera APK Debug e NÃO usa keystore, senha ou Secrets do GitHub.
+permissions:
+  contents: read
+
+concurrency:
+  group: right-price-build
+  cancel-in-progress: false
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    name: Compilar APK Android
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
     steps:
-      - name: Baixar repositório
+      - name: Baixar código do projeto
         uses: actions/checkout@v4
 
       - name: Configurar Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '17'
+          cache: gradle
 
-      - name: Configurar Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Extrair projeto corrigido
+      - name: Localizar projeto Android
         shell: bash
         run: |
           set -euo pipefail
-          ZIP="Right_Price_V2_3_1_MOTOR_PRECOS_AUDITADO.zip"
-          test -f "$ZIP" || { echo "::error::Coloque $ZIP na raiz do repositório."; exit 1; }
-          rm -rf rp-source www android
-          mkdir -p rp-source www
-          unzip -q "$ZIP" -d rp-source
-          APP="rp-source/vsprice"
-          test -s "$APP/index.html"
-          test -s "$APP/manifest.webmanifest"
-          test -s "$APP/service-worker.js"
-          test -s "$APP/android-native/SaveFilePickerPlugin.java"
-          grep -q 'function fixedExpensePct' "$APP/index.html"
-          grep -q 'function variableExpensePct' "$APP/index.html"
-          if grep -q 'Custos fixos não entram no divisor por produto' "$APP/index.html"; then
-            echo "::error::Texto antigo do motor de preços encontrado."; exit 1
+
+          if [ -f gradlew ]; then
+            echo "PROJECT_DIR=." >> "$GITHUB_ENV"
+          elif [ -f android/gradlew ]; then
+            echo "PROJECT_DIR=android" >> "$GITHUB_ENV"
+          else
+            echo "ERRO: gradlew não encontrado."
+            echo "Confira se o ZIP contém o projeto Android completo."
+            exit 1
           fi
-          cp -a "$APP/." www/
-          cat > package.json <<'PKG'
-          {
-            "name": "right-price",
-            "version": "2.3.1",
-            "private": true,
-            "dependencies": {
-              "@capacitor/core": "6.2.1",
-              "@capacitor/android": "6.2.1"
-            },
-            "devDependencies": {
-              "@capacitor/cli": "6.2.1"
-            }
-          }
-          PKG
-          npm install --no-audit --no-fund
-          cat > capacitor.config.json <<'CAP'
-          {
-            "appId": "br.com.vilasiria.formacaoprecos",
-            "appName": "Right Price",
-            "webDir": "www",
-            "bundledWebRuntime": false
-          }
-          CAP
-          npx cap add android
-          npx cap sync android
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('android/app/build.gradle')
-          s=p.read_text()
-          import re
-          s=re.sub(r'versionCode\s+\d+', 'versionCode 231', s, count=1)
-          s=re.sub(r'versionName\s+["\'][^"\']+["\']', 'versionName "2.3.1"', s, count=1)
-          p.write_text(s)
-          PY
 
-      - name: Aplicar ícones originais do ZIP
+      - name: Preparar Gradle
         shell: bash
         run: |
           set -euo pipefail
-          SRC="rp-source/vsprice/icons"
-          RES="android/app/src/main/res"
-          mkdir -p "$RES/mipmap-mdpi" "$RES/mipmap-hdpi" "$RES/mipmap-xhdpi" "$RES/mipmap-xxhdpi" "$RES/mipmap-xxxhdpi"
-          cp "$SRC/icon-48.png" "$RES/mipmap-mdpi/ic_launcher.png"
-          cp "$SRC/icon-48.png" "$RES/mipmap-mdpi/ic_launcher_round.png"
-          cp "$SRC/icon-72.png" "$RES/mipmap-hdpi/ic_launcher.png"
-          cp "$SRC/icon-72.png" "$RES/mipmap-hdpi/ic_launcher_round.png"
-          cp "$SRC/icon-96.png" "$RES/mipmap-xhdpi/ic_launcher.png"
-          cp "$SRC/icon-96.png" "$RES/mipmap-xhdpi/ic_launcher_round.png"
-          cp "$SRC/icon-144.png" "$RES/mipmap-xxhdpi/ic_launcher.png"
-          cp "$SRC/icon-144.png" "$RES/mipmap-xxhdpi/ic_launcher_round.png"
-          cp "$SRC/icon-192.png" "$RES/mipmap-xxxhdpi/ic_launcher.png"
-          cp "$SRC/icon-192.png" "$RES/mipmap-xxxhdpi/ic_launcher_round.png"
-          rm -f "$RES/mipmap-anydpi-v26/ic_launcher.xml" "$RES/mipmap-anydpi-v26/ic_launcher_round.xml"
-
-      - name: Registrar o recurso nativo de backup
-        shell: bash
-        run: |
-          set -euo pipefail
-          DEST="android/app/src/main/java/br/com/vilasiria/formacaoprecos"
-          mkdir -p "$DEST"
-          cp rp-source/vsprice/android-native/SaveFilePickerPlugin.java "$DEST/SaveFilePickerPlugin.java"
-          cat > "$DEST/MainActivity.java" <<'JAVA'
-          package br.com.vilasiria.formacaoprecos;
-          import android.os.Bundle;
-          import com.getcapacitor.BridgeActivity;
-          public class MainActivity extends BridgeActivity {
-            @Override public void onCreate(Bundle savedInstanceState) {
-              registerPlugin(SaveFilePickerPlugin.class);
-              super.onCreate(savedInstanceState);
-            }
-          }
-          JAVA
-          npx cap sync android
-          cp rp-source/vsprice/icons/icon-48.png android/app/src/main/res/mipmap-mdpi/ic_launcher.png
-          cp rp-source/vsprice/icons/icon-48.png android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png
-          cp rp-source/vsprice/icons/icon-72.png android/app/src/main/res/mipmap-hdpi/ic_launcher.png
-          cp rp-source/vsprice/icons/icon-72.png android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png
-          cp rp-source/vsprice/icons/icon-96.png android/app/src/main/res/mipmap-xhdpi/ic_launcher.png
-          cp rp-source/vsprice/icons/icon-96.png android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png
-          cp rp-source/vsprice/icons/icon-144.png android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png
-          cp rp-source/vsprice/icons/icon-144.png android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png
-          cp rp-source/vsprice/icons/icon-192.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
-          cp rp-source/vsprice/icons/icon-192.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
-
-      - name: Gerar APK instalável sem keystore nem segredos
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd android
+          cd "$PROJECT_DIR"
           chmod +x gradlew
-          ./gradlew --no-daemon assembleDebug
-          test -s app/build/outputs/apk/debug/app-debug.apk
-          cp app/build/outputs/apk/debug/app-debug.apk ../Right-Price-V2.3.1.apk
-          cd ..
-          test -s Right-Price-V2.3.1.apk
+          ./gradlew --version
 
-      - name: Disponibilizar APK gerado
+      - name: Compilar APK de release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+
+          ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Localizar e validar APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$RUNNER_TEMP/right-price-apk"
+
+          find "$PROJECT_DIR" \
+            -type f \
+            -path '*/build/outputs/apk/release/*.apk' \
+            -exec cp {} "$RUNNER_TEMP/right-price-apk/" \;
+
+          APK_COUNT=$(find "$RUNNER_TEMP/right-price-apk" \
+            -maxdepth 1 -type f -name '*.apk' | wc -l)
+
+          if [ "$APK_COUNT" -eq 0 ]; then
+            echo "ERRO: nenhum APK de release foi gerado."
+            exit 1
+          fi
+
+          for APK in "$RUNNER_TEMP"/right-price-apk/*.apk; do
+            if [ ! -s "$APK" ]; then
+              echo "ERRO: APK vazio: $APK"
+              exit 1
+            fi
+
+            if ! unzip -t "$APK" >/dev/null; then
+              echo "ERRO: APK inválido: $APK"
+              exit 1
+            fi
+          done
+
+      - name: Publicar APK gerado
         uses: actions/upload-artifact@v4
         with:
-          name: Right-Price-V2.3.1-APK-Instalavel
-          path: Right-Price-V2.3.1.apk
+          name: Right-Price-V2.1.6-APK
+          path: ${{ runner.temp }}/right-price-apk/*.apk
           if-no-files-found: error
+          retention-days: 14
