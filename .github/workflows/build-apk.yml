@@ -20,27 +20,29 @@ jobs:
       - name: Baixar código do projeto
         uses: actions/checkout@v4
 
-      - name: Configurar Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: gradle
-
       - name: Localizar projeto Android
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "Arquivos encontrados na raiz:"
+          ls -la
 
           if [ -f gradlew ]; then
             echo "PROJECT_DIR=." >> "$GITHUB_ENV"
           elif [ -f android/gradlew ]; then
             echo "PROJECT_DIR=android" >> "$GITHUB_ENV"
           else
-            echo "ERRO: gradlew não encontrado."
-            echo "Confira se o ZIP contém o projeto Android completo."
+            echo "ERRO: gradlew não encontrado na raiz nem em android/."
+            echo "Confira se o repositório contém o projeto Android completo."
             exit 1
           fi
+
+      - name: Configurar Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
 
       - name: Preparar Gradle
         shell: bash
@@ -55,14 +57,12 @@ jobs:
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
-
           ./gradlew --no-daemon --stacktrace assembleRelease
 
       - name: Localizar e validar APK
         shell: bash
         run: |
           set -euo pipefail
-
           mkdir -p "$RUNNER_TEMP/right-price-apk"
 
           find "$PROJECT_DIR" \
@@ -70,24 +70,14 @@ jobs:
             -path '*/build/outputs/apk/release/*.apk' \
             -exec cp {} "$RUNNER_TEMP/right-price-apk/" \;
 
-          APK_COUNT=$(find "$RUNNER_TEMP/right-price-apk" \
-            -maxdepth 1 -type f -name '*.apk' | wc -l)
-
-          if [ "$APK_COUNT" -eq 0 ]; then
+          if ! find "$RUNNER_TEMP/right-price-apk" \
+            -maxdepth 1 -type f -name '*.apk' | grep -q .; then
             echo "ERRO: nenhum APK de release foi gerado."
             exit 1
           fi
 
           for APK in "$RUNNER_TEMP"/right-price-apk/*.apk; do
-            if [ ! -s "$APK" ]; then
-              echo "ERRO: APK vazio: $APK"
-              exit 1
-            fi
-
-            if ! unzip -t "$APK" >/dev/null; then
-              echo "ERRO: APK inválido: $APK"
-              exit 1
-            fi
+            unzip -t "$APK" >/dev/null
           done
 
       - name: Publicar APK gerado
