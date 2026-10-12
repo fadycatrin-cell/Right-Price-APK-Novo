@@ -1,4 +1,4 @@
-name: Gerar APK Right Price 2.37
+name: Right Price 2.37 - Gerar APK
 
 on:
   workflow_dispatch:
@@ -7,29 +7,14 @@ permissions:
   contents: read
 
 jobs:
-  build-apk:
-    name: Gerar somente o APK
+  build:
+    name: Compilar APK Right Price 2.37
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
-      - name: Baixar o repositório
+      - name: Baixar repositório
         uses: actions/checkout@v4
-
-      - name: Verificar arquivos da versão 2.37
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -f vsprice/index.html || { echo 'ERRO: não encontrei vsprice/index.html. Extraia a pasta vsprice da versão Right_Price_AUDITORIA_FINAL_V2_37.zip para a raiz do repositório.'; exit 1; }
-          test -f vsprice/manifest.webmanifest
-          test -f vsprice/icons/icon-512.png
-          grep -q 'const VERSION=2.37' vsprice/index.html || { echo 'ERRO: o index.html não parece ser a versão 2.37. Nenhuma alteração foi feita no aplicativo.'; exit 1; }
-          test -f vsprice/signing/vila-siria-update.jks || { echo 'ERRO: a chave original vila-siria-update.jks não está no projeto.'; exit 1; }
-
-      - name: Configurar Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
 
       - name: Configurar Java
         uses: actions/setup-java@v4
@@ -37,26 +22,66 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Preparar ferramentas Android
-        uses: android-actions/setup-android@v3
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
-      - name: Preparar projeto nativo sem alterar os arquivos do aplicativo
+      - name: Configurar Android SDK sem action externa
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p www assets
-          rsync -a --exclude="signing/" --exclude="android-native/" vsprice/ www/
-          cp vsprice/icons/icon-512.png assets/icon.png
-          cp vsprice/icons/icon-512.png assets/splash.png
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK_ROOT" ]; then
+            echo "::error::Android SDK não encontrado no runner: $SDK_ROOT"
+            exit 1
+          fi
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager 2>/dev/null | sort | tail -n 1)"
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager não encontrado dentro de $SDK_ROOT/cmdline-tools."
+            find "$SDK_ROOT" -maxdepth 4 -type f -name sdkmanager 2>/dev/null || true
+            exit 1
+          fi
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null || true
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Validar e extrair a versão exata
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="Right_Price_AUDITORIA_FINAL_V2_37.zip"
+          test -s "$ZIP" || { echo "::error::Coloque $ZIP na raiz do repositório."; exit 1; }
+          unzip -t "$ZIP"
+          rm -rf source www android
+          mkdir -p source www
+          unzip -q "$ZIP" -d source
+          APP="source/vsprice"
+          test -s "$APP/index.html"
+          test -s "$APP/manifest.webmanifest"
+          test -s "$APP/service-worker.js"
+          test -s "$APP/icons/icon-512.png"
+          test -s "$APP/android-native/SaveFilePickerPlugin.java"
+          test -s "$APP/signing/vila-siria-update.jks"
+          grep -Fq 'const VERSION=2.37' "$APP/index.html"
+          cp -a "$APP/." www/
+          rm -rf www/signing www/android-native
+
+      - name: Criar configuração Capacitor sem modificar os arquivos web
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          cp source/vsprice/icons/icon-512.png assets/icon.png
+          cp source/vsprice/icons/icon-512.png assets/splash.png
           cat > package.json <<'JSON'
           {
-            "name": "right-price-android-build",
+            "name": "right-price",
             "version": "2.37.0",
             "private": true,
-            "description": "Build Android wrapper for Right Price 2.37",
-            "scripts": {
-              "build": "echo 'Arquivos web copiados sem compilação ou transformação'"
-            },
             "dependencies": {
               "@capacitor/core": "7.4.3",
               "@capacitor/android": "7.4.3"
@@ -73,9 +98,7 @@ jobs:
             "appName": "Right Price",
             "webDir": "www",
             "bundledWebRuntime": false,
-            "server": {
-              "androidScheme": "https"
-            }
+            "server": { "androidScheme": "https" }
           }
           JSON
           npm install --no-audit --no-fund
@@ -83,7 +106,27 @@ jobs:
           npx capacitor-assets generate --android
           npx cap sync android
 
-      - name: Configurar versão e assinatura original
+      - name: Integrar plugin nativo de backup
+        shell: bash
+        run: |
+          set -euo pipefail
+          JAVA_DIR="android/app/src/main/java/br/com/vilasiria/formacaoprecos"
+          mkdir -p "$JAVA_DIR"
+          cp source/vsprice/android-native/SaveFilePickerPlugin.java "$JAVA_DIR/SaveFilePickerPlugin.java"
+          cat > "$JAVA_DIR/MainActivity.java" <<'JAVA'
+          package br.com.vilasiria.formacaoprecos;
+          import android.os.Bundle;
+          import com.getcapacitor.BridgeActivity;
+          public class MainActivity extends BridgeActivity {
+            @Override
+            public void onCreate(Bundle savedInstanceState) {
+              registerPlugin(SaveFilePickerPlugin.class);
+              super.onCreate(savedInstanceState);
+            }
+          }
+          JAVA
+
+      - name: Configurar versão e assinatura
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
@@ -91,54 +134,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -n "$ANDROID_KEYSTORE_PASSWORD" || { echo 'ERRO: configure o GitHub Secret ANDROID_KEYSTORE_PASSWORD.'; exit 1; }
-          test -n "$ANDROID_KEY_PASSWORD" || { echo 'ERRO: configure o GitHub Secret ANDROID_KEY_PASSWORD.'; exit 1; }
-          test -n "$ANDROID_KEY_ALIAS" || { echo 'ERRO: configure o GitHub Secret ANDROID_KEY_ALIAS.'; exit 1; }
+          test -n "$ANDROID_KEYSTORE_PASSWORD" || { echo "::error::Configure o Secret ANDROID_KEYSTORE_PASSWORD."; exit 1; }
+          test -n "$ANDROID_KEY_PASSWORD" || { echo "::error::Configure o Secret ANDROID_KEY_PASSWORD."; exit 1; }
+          test -n "$ANDROID_KEY_ALIAS" || { echo "::error::Configure o Secret ANDROID_KEY_ALIAS."; exit 1; }
           mkdir -p android/app/keystore
-          cp vsprice/signing/vila-siria-update.jks android/app/keystore/vila-siria-update.jks
+          cp source/vsprice/signing/vila-siria-update.jks android/app/keystore/vila-siria-update.jks
           python3 - <<'PY'
           from pathlib import Path
           import re
-
           p = Path('android/app/build.gradle')
+          if not p.exists():
+              raise SystemExit('Não encontrei android/app/build.gradle; o projeto Android não foi gerado como esperado.')
           s = p.read_text()
-
+          s = re.sub(r'\bversionCode\s+\d+', 'versionCode 2306', s, count=1)
+          s = re.sub(r'\bversionName\s+["\'][^"\']+["\']', 'versionName "2.37"', s, count=1)
           if 'signingConfigs {' not in s:
-              signing = '''    signingConfigs {
-          release {
-              storeFile file("keystore/vila-siria-update.jks")
-              storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
-              keyAlias System.getenv("ANDROID_KEY_ALIAS")
-              keyPassword System.getenv("ANDROID_KEY_PASSWORD")
-          }
-      }
-
-      '''
-              s = s.replace('    buildTypes {', signing + '    buildTypes {', 1)
-
-          if re.search(r'\\bversionCode\\s+\\d+', s):
-              s = re.sub(r'\\bversionCode\\s+\\d+', 'versionCode 237', s, count=1)
-          else:
-              s = s.replace('defaultConfig {', 'defaultConfig {\\n        versionCode 237', 1)
-
-          if re.search(r'\\bversionName\\s+"[^"]*"', s):
-              s = re.sub(r'\\bversionName\\s+"[^"]*"', 'versionName "2.37"', s, count=1)
-          else:
-              s = s.replace('defaultConfig {', 'defaultConfig {\\n        versionName "2.37"', 1)
-
+              signing = '\n    signingConfigs {\n        release {\n            storeFile file("keystore/vila-siria-update.jks")\n            storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")\n            keyAlias System.getenv("ANDROID_KEY_ALIAS")\n            keyPassword System.getenv("ANDROID_KEY_PASSWORD")\n        }\n    }\n'
+              s = s.replace('    buildTypes {', signing + '\n    buildTypes {', 1)
           if 'signingConfig signingConfigs.release' not in s:
-              before, after = s.split('buildTypes {', 1)
-              after = after.replace('release {', 'release {\\n            signingConfig signingConfigs.release', 1)
-              s = before + 'buildTypes {' + after
-
+              s = re.sub(r'(release\s*\{)', r'\1\n            signingConfig signingConfigs.release', s, count=1)
           p.write_text(s)
           PY
 
-      - name: Gerar APK Release assinado
-        env:
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      - name: Compilar APK Release
+        shell: bash
         run: |
           set -euo pipefail
           cd android
