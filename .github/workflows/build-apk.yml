@@ -1,194 +1,154 @@
-name: Gerar APK Right Price V2.4.2
+name: Gerar APK Right Price 2.37
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - "Right_Price_V2_4_2_MARKUP_CORRETO_POR_CANAL.zip"
-      - ".github/workflows/build-right-price-v2.4.2.yml"
 
 permissions:
   contents: read
 
 jobs:
-  build:
-    name: Compilar APK V2.4.2
+  build-apk:
+    name: Gerar somente o APK
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 30
 
     steps:
-      - name: Baixar repositório
+      - name: Baixar o repositório
         uses: actions/checkout@v4
 
-      - name: Configurar Node.js 20
+      - name: Verificar arquivos da versão 2.37
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f vsprice/index.html || { echo 'ERRO: não encontrei vsprice/index.html. Extraia a pasta vsprice da versão Right_Price_AUDITORIA_FINAL_V2_37.zip para a raiz do repositório.'; exit 1; }
+          test -f vsprice/manifest.webmanifest
+          test -f vsprice/icons/icon-512.png
+          grep -q 'const VERSION=2.37' vsprice/index.html || { echo 'ERRO: o index.html não parece ser a versão 2.37. Nenhuma alteração foi feita no aplicativo.'; exit 1; }
+          test -f vsprice/signing/vila-siria-update.jks || { echo 'ERRO: a chave original vila-siria-update.jks não está no projeto.'; exit 1; }
+
+      - name: Configurar Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '22'
 
-      - name: Configurar Java 17
+      - name: Configurar Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '21'
 
-      - name: Instalar Android SDK sem action externa
+      - name: Preparar ferramentas Android
+        uses: android-actions/setup-android@v3
+
+      - name: Preparar projeto nativo sem alterar os arquivos do aplicativo
         shell: bash
         run: |
           set -euo pipefail
-          SDK="$RUNNER_TEMP/android-sdk"
-          mkdir -p "$SDK/cmdline-tools"
-          cd "$RUNNER_TEMP"
-          curl -fL --retry 3 --retry-delay 2 \
-            "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" \
-            -o android-command-tools.zip
-          mkdir -p android-command-tools
-          unzip -q android-command-tools.zip -d android-command-tools
-          mkdir -p "$SDK/cmdline-tools/latest"
-          cp -a android-command-tools/cmdline-tools/. "$SDK/cmdline-tools/latest/"
-          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
-          echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
-          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" --licenses >/dev/null || true
-          "$SDK/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK" \
-            "platform-tools" "platforms;android-35" "build-tools;35.0.0"
-
-      - name: Validar ZIP específico V2.4.2
-        shell: bash
-        run: |
-          set -euo pipefail
-          ZIP="Right_Price_V2_4_2_MARKUP_CORRETO_POR_CANAL.zip"
-          test -s "$ZIP" || { echo "::error::Coloque $ZIP na raiz do repositório."; exit 1; }
-          unzip -t "$ZIP"
-          unzip -Z1 "$ZIP" | grep -qx 'vsprice/index.html'
-          unzip -Z1 "$ZIP" | grep -qx 'vsprice/manifest.webmanifest'
-          unzip -Z1 "$ZIP" | grep -qx 'vsprice/android-native/SaveFilePickerPlugin.java'
-          unzip -Z1 "$ZIP" | grep -qx 'vsprice/icons/icon-48.png'
-          unzip -Z1 "$ZIP" | grep -qx 'vsprice/icons/icon-72.png'
-          unzip -Z1 "$ZIP" | grep -qx 'vsprice/icons/icon-96.png'
-          unzip -Z1 "$ZIP" | grep -qx 'vsprice/icons/icon-144.png'
-          unzip -Z1 "$ZIP" | grep -qx 'vsprice/icons/icon-192.png'
-          unzip -Z1 "$ZIP" | grep -qx 'vsprice/icons/icon-512.png'
-
-      - name: Extrair arquivos do app sem editar o conteúdo web
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p right-price-build
-          unzip -q "Right_Price_V2_4_2_MARKUP_CORRETO_POR_CANAL.zip" 'vsprice/*' -d right-price-build
-          mkdir -p right-price-build/www
-          cp -a right-price-build/vsprice/. right-price-build/www/
-          test -s right-price-build/www/index.html
-          (cd right-price-build && sha256sum www/index.html > index.sha256)
-
-      - name: Preparar invólucro Android para APK
-        shell: bash
-        working-directory: right-price-build
-        run: |
-          set -euo pipefail
-          npm init -y
-          npm install --save-exact @capacitor/core@6.2.1 @capacitor/android@6.2.1
-          npm install --save-dev --save-exact @capacitor/cli@6.2.1
-          cat > capacitor.config.json <<'EOF'
+          mkdir -p www assets
+          rsync -a --exclude="signing/" --exclude="android-native/" vsprice/ www/
+          cp vsprice/icons/icon-512.png assets/icon.png
+          cp vsprice/icons/icon-512.png assets/splash.png
+          cat > package.json <<'JSON'
+          {
+            "name": "right-price-android-build",
+            "version": "2.37.0",
+            "private": true,
+            "description": "Build Android wrapper for Right Price 2.37",
+            "scripts": {
+              "build": "echo 'Arquivos web copiados sem compilação ou transformação'"
+            },
+            "dependencies": {
+              "@capacitor/core": "7.4.3",
+              "@capacitor/android": "7.4.3"
+            },
+            "devDependencies": {
+              "@capacitor/cli": "7.4.3",
+              "@capacitor/assets": "3.0.5"
+            }
+          }
+          JSON
+          cat > capacitor.config.json <<'JSON'
           {
             "appId": "br.com.vilasiria.formacaoprecos",
             "appName": "Right Price",
             "webDir": "www",
             "bundledWebRuntime": false,
-            "server": { "androidScheme": "https" }
+            "server": {
+              "androidScheme": "https"
+            }
           }
-          EOF
+          JSON
+          npm install --no-audit --no-fund
           npx cap add android
+          npx capacitor-assets generate --android
           npx cap sync android
 
-      - name: Registrar plugin de backup do ZIP
+      - name: Configurar versão e assinatura original
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         shell: bash
-        working-directory: right-price-build
         run: |
           set -euo pipefail
-          JAVA_DIR="android/app/src/main/java/br/com/vilasiria/formacaoprecos"
-          mkdir -p "$JAVA_DIR"
-          cp vsprice/android-native/SaveFilePickerPlugin.java "$JAVA_DIR/SaveFilePickerPlugin.java"
-          cat > "$JAVA_DIR/MainActivity.java" <<'EOF'
-          package br.com.vilasiria.formacaoprecos;
-          import android.os.Bundle;
-          import com.getcapacitor.BridgeActivity;
-          public class MainActivity extends BridgeActivity {
-              @Override
-              public void onCreate(Bundle savedInstanceState) {
-                  registerPlugin(SaveFilePickerPlugin.class);
-                  super.onCreate(savedInstanceState);
-              }
+          test -n "$ANDROID_KEYSTORE_PASSWORD" || { echo 'ERRO: configure o GitHub Secret ANDROID_KEYSTORE_PASSWORD.'; exit 1; }
+          test -n "$ANDROID_KEY_PASSWORD" || { echo 'ERRO: configure o GitHub Secret ANDROID_KEY_PASSWORD.'; exit 1; }
+          test -n "$ANDROID_KEY_ALIAS" || { echo 'ERRO: configure o GitHub Secret ANDROID_KEY_ALIAS.'; exit 1; }
+          mkdir -p android/app/keystore
+          cp vsprice/signing/vila-siria-update.jks android/app/keystore/vila-siria-update.jks
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('android/app/build.gradle')
+          s = p.read_text()
+
+          if 'signingConfigs {' not in s:
+              signing = '''    signingConfigs {
+          release {
+              storeFile file("keystore/vila-siria-update.jks")
+              storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+              keyAlias System.getenv("ANDROID_KEY_ALIAS")
+              keyPassword System.getenv("ANDROID_KEY_PASSWORD")
           }
-          EOF
+      }
 
-      - name: Configurar identificação Android e ícones originais
-        shell: bash
-        working-directory: right-price-build
+      '''
+              s = s.replace('    buildTypes {', signing + '    buildTypes {', 1)
+
+          if re.search(r'\\bversionCode\\s+\\d+', s):
+              s = re.sub(r'\\bversionCode\\s+\\d+', 'versionCode 237', s, count=1)
+          else:
+              s = s.replace('defaultConfig {', 'defaultConfig {\\n        versionCode 237', 1)
+
+          if re.search(r'\\bversionName\\s+"[^"]*"', s):
+              s = re.sub(r'\\bversionName\\s+"[^"]*"', 'versionName "2.37"', s, count=1)
+          else:
+              s = s.replace('defaultConfig {', 'defaultConfig {\\n        versionName "2.37"', 1)
+
+          if 'signingConfig signingConfigs.release' not in s:
+              before, after = s.split('buildTypes {', 1)
+              after = after.replace('release {', 'release {\\n            signingConfig signingConfigs.release', 1)
+              s = before + 'buildTypes {' + after
+
+          p.write_text(s)
+          PY
+
+      - name: Gerar APK Release assinado
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           set -euo pipefail
-          GRADLE="android/app/build.gradle"
-          STRINGS="android/app/src/main/res/values/strings.xml"
-          test -s "$GRADLE"
-          cat > "$STRINGS" <<'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <resources>
-              <string name="app_name">Right Price</string>
-              <string name="title_activity_main">Right Price</string>
-              <string name="package_name">br.com.vilasiria.formacaoprecos</string>
-              <string name="custom_url_scheme">br.com.vilasiria.formacaoprecos</string>
-          </resources>
-          EOF
-          grep -q 'applicationId' "$GRADLE"
-          grep -q 'versionCode' "$GRADLE"
-          grep -q 'versionName' "$GRADLE"
-          sed -i 's/applicationId .*/applicationId "br.com.vilasiria.formacaoprecos"/' "$GRADLE"
-          sed -i 's/versionCode .*/versionCode 2402/' "$GRADLE"
-          sed -i 's/versionName .*/versionName "2.4.2"/' "$GRADLE"
-          RES="android/app/src/main/res"
-          for spec in \
-            "mipmap-mdpi:icon-48.png" \
-            "mipmap-hdpi:icon-72.png" \
-            "mipmap-xhdpi:icon-96.png" \
-            "mipmap-xxhdpi:icon-144.png" \
-            "mipmap-xxxhdpi:icon-192.png"; do
-            dir="${spec%%:*}"
-            file="${spec#*:}"
-            mkdir -p "$RES/$dir"
-            cp "vsprice/icons/$file" "$RES/$dir/ic_launcher.png"
-            cp "vsprice/icons/$file" "$RES/$dir/ic_launcher_round.png"
-          done
-          # Mantém os arquivos web exatamente como vieram no ZIP.
-          sha256sum -c index.sha256
-
-      - name: Compilar APK de depuração sem senha
-        shell: bash
-        working-directory: right-price-build/android
-        run: |
-          set -euo pipefail
+          cd android
           chmod +x gradlew
-          ./gradlew --no-daemon clean assembleDebug
-          APK="app/build/outputs/apk/debug/app-debug.apk"
-          test -s "$APK"
-          mkdir -p ../apk-final
-          cp "$APK" ../apk-final/Right-Price-V2.4.2.apk
+          ./gradlew --no-daemon clean assembleRelease
 
-      - name: Verificar assinatura e arquivo final
-        shell: bash
-        working-directory: right-price-build/android
-        run: |
-          set -euo pipefail
-          APK="../apk-final/Right-Price-V2.4.2.apk"
-          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
-          test -x "$APKSIGNER"
-          "$APKSIGNER" verify "$APK"
-          sha256sum "$APK"
-          ls -lh "$APK"
-
-      - name: Publicar APK como artefato
+      - name: Publicar somente o APK
         uses: actions/upload-artifact@v4
         with:
-          name: Right-Price-V2.4.2-APK
-          path: right-price-build/apk-final/Right-Price-V2.4.2.apk
+          name: Right-Price-V2.37-APK
+          path: android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
           retention-days: 14
